@@ -41,7 +41,6 @@ class LoginController:
     async def user_login(self, provider, token, email, password, timestamp):
         from ..extensions import bcrypt
 
-        token_web = None
         access_token = None
 
         try:
@@ -159,7 +158,7 @@ class LoginController:
     <p>Someone has requested a link to verify your account, and you can do this through the link below.</p>
     <p>your otp is {otp}.</p>
     <p>
-        <a href="{web_short_me}/account-active?token={token}">
+        <a href="{web_short_me}account-active?token={token}">
             Click here to activate your account
         </a>
     </p>

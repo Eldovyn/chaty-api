@@ -124,9 +124,7 @@ class RegisterController:
                 )
                 user_me = self.user_seliazer.serialize(user_data)
                 expired_at = timestamp + datetime.timedelta(minutes=5)
-                token = await TokenAccountActive.insert(
-                    f"{user_data.id}", timestamp
-                )
+                token = await TokenAccountActive.insert(f"{user_data.id}", timestamp)
                 otp = generate_otp(4)
                 token_account_active = await AccountActiveDatabase.insert(
                     email, token, otp, expired_at
@@ -146,7 +144,7 @@ class RegisterController:
     <p>Someone has requested a link to verify your account, and you can do this through the link below.</p>
     <p>your otp is {otp}.</p>
     <p>
-        <a href="{web_short_me}/account-active?token={token}">
+        <a href="{web_short_me}account-active?token={token}">
             Click here to activate your account
         </a>
     </p>

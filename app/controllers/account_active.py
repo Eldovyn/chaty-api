@@ -6,10 +6,12 @@ from ..utils import (
     Validation,
     generate_etag,
     generate_otp,
+    AuthJwt,
 )
 import datetime
 from ..serializers import UserSerializer, TokenSerializer
 from ..config import web_short_me
+from ..dataclasses import AccessTokenSchema
 
 
 class AccountActiveController:
@@ -73,9 +75,7 @@ class AccountActiveController:
                 422,
             )
         expired_at = timestamp + datetime.timedelta(minutes=5)
-        token_email = await TokenAccountActive.insert(
-            f"{user_token.id}", timestamp
-        )
+        token_email = await TokenAccountActive.insert(f"{user_token.id}", timestamp)
         otp = generate_otp(4)
         account_active_data = await AccountActiveDatabase.insert(
             user_token.user.email, token_email, otp, expired_at
@@ -95,7 +95,7 @@ class AccountActiveController:
     <p>Someone has requested a link to verify your account, and you can do this through the link below.</p>
     <p>your otp is {otp}.</p>
     <p>
-        <a href="{web_short_me}/account-active?token={token_email}">
+        <a href="{web_short_me}account-active?token={token_email}">
             Click here to activate your account
         </a>
     </p>
@@ -143,12 +143,17 @@ class AccountActiveController:
                 jsonify({"message": "validation errors", "errors": errors}),
                 422,
             )
-        await AccountActiveDatabase.update(
+        user_data = await AccountActiveDatabase.update(
             "user_active_by_token",
             token=user_token.token,
-            user_id=f'{user_token.user.id}',
+            user_id=f"{user_token.user.id}",
             otp=user_token.otp,
         )
+        access_token = await AuthJwt.generate_jwt_async(
+            f"{user_data.user.id}", timestamp
+        )
+        token_model = AccessTokenSchema(access_token, timestamp)
+        token_data = self.token_serializer.serialize(token_model)
         current_user = self.user_seliazer.serialize(user_token.user)
         token_data = self.token_serializer.serialize(user_token)
         return (
@@ -157,6 +162,7 @@ class AccountActiveController:
                     "message": "email verified successfully",
                     "data": token_data,
                     "user": current_user,
+                    "token": token_data,
                 }
             ),
             201,
@@ -192,9 +198,7 @@ class AccountActiveController:
                 409,
             )
         expired_at = timestamp + datetime.timedelta(minutes=5)
-        token = await TokenAccountActive.insert(
-            f"{user_data.id}", timestamp
-        )
+        token = await TokenAccountActive.insert(f"{user_data.id}", timestamp)
         otp = generate_otp(4)
         account_active_data = await AccountActiveDatabase.insert(
             email, token, otp, expired_at
@@ -214,7 +218,7 @@ class AccountActiveController:
     <p>Someone has requested a link to verify your account, and you can do this through the link below.</p>
     <p>your otp is {otp}.</p>
     <p>
-        <a href="{web_short_me}/account-active?token={token}">
+        <a href="{web_short_me}account-active?token={token}">
             Click here to activate your account
         </a>
     </p>
