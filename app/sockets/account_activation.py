@@ -1,5 +1,5 @@
 from flask import request
-from flask_socketio import SocketIO, disconnect, join_room, emit
+from flask_socketio import SocketIO, disconnect, join_room
 from ..models import AccountActiveModel
 import time
 import datetime
@@ -27,7 +27,7 @@ def register_account_activation_socketio_events(socket_io: SocketIO):
                     data_token.delete()
                 socket_io.emit(
                     "expired",
-                    {"status": "expire", 'message': 'your session expired'},
+                    {"status": "expire", "message": "your session expired"},
                     room=room,
                     namespace="/account-activation",
                 )
@@ -81,7 +81,7 @@ def register_account_activation_socketio_events(socket_io: SocketIO):
         countdowns[room] = expired_time
 
         remaining = max(0, int(expired_time - now))
-        emit("countdown", {"remaining": remaining})
+        socket_io.emit("countdown", {"remaining": remaining})
 
         if not hasattr(countdown_thread, "running_rooms"):
             countdown_thread.running_rooms = set()

@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Chat Bot</title>
+  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
+    #log { border: 1px solid #ccc; padding: 10px; height: 240px; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Chat Room</h1>
+  <label>Room ID: <input id="room" value="room-123" /></label>
+  <div id="log"></div>
+
+  <script>
+    const token = "Bearer <JWT_KAMU_DI_SINI>";
+
+    // Ambil room dari input atau dari query ?room=...
+    const getRoomId = () => {
+      const urlRoom = new URLSearchParams(location.search).get("room");
+      return (urlRoom || document.getElementById("room").value || "").trim();
+    };
+
+    // Connect ke namespace "/chat-bot" dengan auth token
+    const socket = io("/chat-bot", {
+      transports: ["websocket"],
+      auth: { token },
+    });
+
+    const log = (msg) => {
+      const el = document.getElementById("log");
+      el.innerHTML += `<div>${msg}</div>`;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    // Begitu connect (termasuk setelah auto-reconnect), langsung emit join
+    socket.on("connect", () => {
+      const room_id = getRoomId();
+      if (room_id) {
+        socket.emit("join", { room_id });
+        log(`connected: ${socket.id} → auto-join room "${room_id}"`);
+      } else {
+        log("connected, tapi room_id kosong");
+      }
+    });
+
+    socket.on("connect_error", (err) => {
+      log(`connect_error: ${err.message}`);
+    });
+
+    socket.on("disconnect", (reason) => {
+      log(`disconnected: ${reason}`);
+    });
+
+    // Pesan dari server via send() → event "message"
+    socket.on("message", (data) => {
+      log(`[message] ${typeof data === "string" ? data : JSON.stringify(data)}`);
+    });
+
+    // Histori chat dari server via emit("chat:history", ...)
+    socket.on("chat:history", (chatList) => {
+      log(`[chat:history] ${chatList.length} item`);
+      chatList.forEach((c) => log(`• ${JSON.stringify(c)}`));
+    });
+
+    // Kalau user mengubah room di input, langsung join ulang
+    document.getElementById("room").addEventListener("change", (e) => {
+      const room_id = getRoomId();
+      if (socket.connected && room_id) {
+        socket.emit("join", { room_id });
+        log(`switched → join room "${room_id}"`);
+      }
+    });
+  </script>
+</body>
+</html>

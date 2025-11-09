@@ -22,3 +22,11 @@ class Config:
     MAIL_DEFAULT_SENDER = smtp_email
 
     CORS_SUPPORTS_CREDENTIALS = True
+
+
+class TestConfig(Config):
+    MONGODB_SETTINGS = {
+        "db": database_mongodb_dev,
+        "host": database_mongodb_url_dev,
+        "connect": False,
+    }

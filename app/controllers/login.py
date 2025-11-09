@@ -45,10 +45,10 @@ class LoginController:
 
         try:
             errors = {}
-            await Validation.validate_provider(errors, provider)
+            await Validation.validate_provider_async(errors, provider)
 
             if provider == "google":
-                await Validation.validate_required_text(errors, "token", token)
+                await Validation.validate_required_text_async(errors, "token", token)
                 if errors:
                     return (
                         jsonify({"errors": errors, "message": "validations error"}),
@@ -101,8 +101,10 @@ class LoginController:
                 )
                 user_me = self.user_seliazer.serialize(user_data)
             else:
-                await Validation.validate_required_text(errors, "email", email)
-                await Validation.validate_required_text(errors, "password", password)
+                await Validation.validate_required_text_async(errors, "email", email)
+                await Validation.validate_required_text_async(
+                    errors, "password", password
+                )
                 if errors:
                     return (
                         jsonify(

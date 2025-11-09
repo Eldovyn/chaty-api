@@ -4,7 +4,9 @@ import os
 load_dotenv()
 
 database_mongodb = os.getenv("DATABASE_MONGODB")
+database_mongodb_dev = os.getenv("DATABASE_MONGODB_DEV")
 database_mongodb_url = os.getenv("DATABASE_MONGODB_URL")
+database_mongodb_url_dev = os.getenv("DATABASE_MONGODB_URL_DEV")
 salt_account_active = os.getenv("SALT_ACCOUNT_ACTIVE")
 secret_key_account_active = os.getenv("SECRET_KEY_ACCOUNT_ACTIVE")
 salt_reset_password = os.getenv("SALT_RESET_PASSWORD")
@@ -21,4 +23,4 @@ provider = os.getenv("PROVIDER")
 cloudinary_api_secret = os.getenv("CLOUDINARY_API_SECRET")
 cloudinary_api_key = os.getenv("CLOUDINARY_API_KEY")
 cloudinary_cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME")
-
+gemini_api_key = os.getenv("GEMINI_API_KEY")

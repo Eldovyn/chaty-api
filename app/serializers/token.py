@@ -11,6 +11,7 @@ class TokenSerializer(SerializerInterface):
         id_is_null: bool = False,
         access_token_is_null: bool = False,
         token_is_null: bool = False,
+        otp_is_null: bool = False,
         created_at_is_null: bool = False,
         updated_at_is_null: bool = False,
         expired_at_is_null: bool = False,
@@ -29,6 +30,8 @@ class TokenSerializer(SerializerInterface):
                 data["updated_at"] = token_data.updated_at.isoformat()
             if not expired_at_is_null:
                 data["expired_at"] = token_data.expired_at.isoformat()
+            if not otp_is_null:
+                data["otp"] = token_data.otp
         if isinstance(token_data, AccessTokenSchema):
             if not access_token_is_null:
                 data["access_token"] = token_data.access_token

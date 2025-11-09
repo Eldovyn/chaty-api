@@ -10,7 +10,7 @@ profile_controller = ProfileController()
 @jwt_required()
 async def user_me():
     user = request.user
-    return await profile_controller.user_me(user)
+    return await profile_controller.current_user(user)
 
 
 @users_router.get("/default-avatar")

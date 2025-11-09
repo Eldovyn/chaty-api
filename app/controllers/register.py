@@ -36,9 +36,9 @@ class RegisterController:
 
         try:
             errors = {}
-            await Validation.validate_provider(errors, provider)
+            await Validation.validate_provider_async(errors, provider)
             if provider == "google":
-                await Validation.validate_required_text(errors, "token", token)
+                await Validation.validate_required_text_async(errors, "token", token)
                 if errors:
                     return (
                         jsonify(
@@ -86,9 +86,11 @@ class RegisterController:
                 )
                 token_data = self.token_serializer.serialize(access_token_model)
             else:
-                await Validation.validate_username(errors, username)
-                await Validation.validate_email(errors, email)
-                await Validation.validate_password(errors, password, confirm_password)
+                await Validation.validate_username_async(errors, username)
+                await Validation.validate_email_async(errors, email)
+                await Validation.validate_password_async(
+                    errors, password, confirm_password
+                )
                 if errors:
                     return (
                         jsonify(

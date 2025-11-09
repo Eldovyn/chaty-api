@@ -19,24 +19,21 @@ class AccountActiveController:
         self.user_seliazer = UserSerializer()
         self.token_serializer = TokenSerializer()
 
-    async def get_user_account_active_verification(self, token, timestamp):
+    async def get_token_by_user_id(self, user_id, timestamp):
         errors = {}
-        await Validation.validate_token(errors, token, "token_account_active")
+        await Validation.validate_required_text_async(errors, user_id, "user_id")
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
         if not (
             user_token := await AccountActiveDatabase.get(
-                "by_token", token=token, created_at=timestamp
+                "get_token_by_user_id", user_id=user_id, created_at=timestamp
             )
         ):
             return (
                 jsonify(
-                    {
-                        "message": "validation errors",
-                        "errors": {"token": ["IS_INVALID"]},
-                    }
+                    {"message": "verification not found or expired", "errors": errors}
                 ),
-                422,
+                404,
             )
         current_user = self.user_seliazer.serialize(user_token.user)
         token_data = self.token_serializer.serialize(user_token)
@@ -58,9 +55,45 @@ class AccountActiveController:
         response.headers["ETag"] = etag
         return response
 
+    async def get_user_account_active_verification(self, token, timestamp):
+        errors = {}
+        await Validation.validate_token_async(errors, token, "token_account_active")
+        if errors:
+            return jsonify({"errors": errors, "message": "validation errors"}), 400
+        if not (
+            user_token := await AccountActiveDatabase.get(
+                "by_token", token=token, created_at=timestamp
+            )
+        ):
+            return (
+                jsonify(
+                    {"message": "verification not found or expired", "errors": errors}
+                ),
+                404,
+            )
+        current_user = self.user_seliazer.serialize(user_token.user)
+        token_data = self.token_serializer.serialize(user_token, otp_is_null=True)
+        combined_data = {**current_user, **token_data}
+        etag = generate_etag(combined_data)
+
+        client_etag = request.headers.get("If-None-Match")
+        if client_etag == etag:
+            return make_response("", 304)
+
+        response_data = {
+            "message": "successfully get account active information",
+            "data": token_data,
+            "user": current_user,
+        }
+
+        response = make_response(jsonify(response_data), 200)
+        response.headers["Content-Type"] = "application/json"
+        response.headers["ETag"] = etag
+        return response
+
     async def user_account_active_verification_re_send(self, token, timestamp):
         errors = {}
-        await Validation.validate_token(errors, token, "token_account_active")
+        await Validation.validate_token_async(errors, token, "token_account_active")
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
         if not (
@@ -106,7 +139,7 @@ class AccountActiveController:
         )
         user_me = self.user_seliazer.serialize(account_active_data.user)
         token_data = self.token_serializer.serialize(
-            account_active_data, token_is_null=True
+            account_active_data, token_is_null=True, otp_is_null=True
         )
         return (
             jsonify(
@@ -121,8 +154,8 @@ class AccountActiveController:
 
     async def user_account_active_verification(self, token, otp, timestamp):
         errors = {}
-        await Validation.validate_token(errors, token, "token_account_active")
-        await Validation.validate_otp(errors, otp)
+        await Validation.validate_token_async(errors, token, "token_account_active")
+        await Validation.validate_otp_async(errors, otp)
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
         if not (
@@ -130,8 +163,12 @@ class AccountActiveController:
                 "by_token", token=token, created_at=timestamp
             )
         ):
-            if "token" not in errors:
-                errors["token"] = ["IS_INVALID"]
+            return (
+                jsonify(
+                    {"message": "verification not found or expired", "errors": errors}
+                ),
+                404,
+            )
         try:
             if user_token.otp != otp:
                 errors.setdefault("otp", []).append("IS_INVALID")
@@ -155,7 +192,7 @@ class AccountActiveController:
         token_model = AccessTokenSchema(access_token, timestamp)
         token_data = self.token_serializer.serialize(token_model)
         current_user = self.user_seliazer.serialize(user_token.user)
-        token_data = self.token_serializer.serialize(user_token)
+        token_data = self.token_serializer.serialize(user_token, otp_is_null=True)
         return (
             jsonify(
                 {
@@ -170,7 +207,7 @@ class AccountActiveController:
 
     async def send_account_active_email(self, email, timestamp):
         errors = {}
-        await Validation.validate_required_text(errors, "email", email)
+        await Validation.validate_required_text_async(errors, "email", email)
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
         if not (user_data := await UserDatabase.get("by_email", email=email)):

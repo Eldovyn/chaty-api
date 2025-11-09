@@ -72,6 +72,12 @@ async def send_account_active_email():
     return await account_active_controller.send_account_active_email(email, timestamp)
 
 
+@auth_router.get("/account-active/<string:user_id>")
+async def get_token_by_user_id(user_id):
+    timestamp = request.timestamp
+    return await account_active_controller.get_token_by_user_id(user_id, timestamp)
+
+
 @auth_router.get("/account-active/activation/<string:token>")
 async def get_user_account_active_verification(token):
     timestamp = request.timestamp

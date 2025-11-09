@@ -1,0 +1,30 @@
+from flask import Blueprint, request
+from ..utils import jwt_required
+from ..controllers import ChatBotController
+
+chat_bot_router = Blueprint("chat_bot_router", __name__)
+chat_bot_controller = ChatBotController()
+
+
+@chat_bot_router.post("/messages")
+@jwt_required()
+async def user_login():
+    user = request.user
+    data = request.json
+    message = data.get("message", "")
+    room_id = data.get("room_id", None)
+    return await chat_bot_controller.create_message(user, message, room_id)
+
+
+@chat_bot_router.get("/messages")
+@jwt_required()
+async def get_messages():
+    user = request.user
+    return await chat_bot_controller.get_messages(user)
+
+
+@chat_bot_router.get("/rooms")
+@jwt_required()
+async def get_all_rooms():
+    user = request.user
+    return await chat_bot_controller.get_all_rooms(user)

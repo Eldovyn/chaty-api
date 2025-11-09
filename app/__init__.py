@@ -1,4 +1,4 @@
-from flask import Flask
+from flask import Flask, render_template
 from .celery_app import celery_init_app
 
 
@@ -10,12 +10,10 @@ def create_app(test_config=None):
 
     app = Flask(__name__, instance_relative_config=True)
 
-    app.config.from_object(Config)
-
     if test_config is None:
-        app.config.from_pyfile("config.py", silent=True)
+        app.config.from_object(Config)
     else:
-        app.config.from_mapping(test_config)
+        app.config.from_object(test_config)
 
     try:
         os.makedirs(app.instance_path)
@@ -47,6 +45,10 @@ def create_app(test_config=None):
     from .error_handlers import register_error_handlers
     from .middlewares import register_middlewares
     from .sockets import register_socket_io
+
+    @app.route("/")
+    def index():
+        return render_template("index.html")
 
     register_socket_io(socket_io)
     register_blueprints(app)

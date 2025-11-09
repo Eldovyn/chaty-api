@@ -4,8 +4,8 @@ from celery.schedules import crontab
 
 
 def register_tasks(celery_app):
-    @celery_app.task(name="update_data_every_5_minutes")
-    def update_data_every_5_minutes():
+    @celery_app.task(name="update_data_every_10_minutes")
+    def update_data_every_10_minutes():
         now = datetime.datetime.now(datetime.timezone.utc)
 
         for model, name in [
@@ -32,7 +32,7 @@ def register_tasks(celery_app):
 
     celery_app.conf.beat_schedule = {
         "run-every-5-minutes": {
-            "task": "update_data_every_5_minutes",
+            "task": "update_data_every_10_minutes",
             "schedule": crontab(minute="*/5"),
         },
     }
