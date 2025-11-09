@@ -11,6 +11,7 @@ def register_chat_bot_socketio_events(socketio):
 
     _HISTORY = []
     _HISTORY_CAP = 2000
+    _ROOM_HAS_SYSTEM = set()
 
     def _now_iso():
         return (
@@ -20,12 +21,21 @@ def register_chat_bot_socketio_events(socketio):
         )
 
     def _append(room: str, role: str, text: str):
+        if role == "system":
+            return
+        _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
+        if len(_HISTORY) > _HISTORY_CAP:
+            del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
+
+    def _append_db(room: str, role: str, text: str):
+        if role == "system":
+            return
         _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
         if len(_HISTORY) > _HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
 
     def _history_for_room(room: str, limit: int = 200):
-        items = [m for m in _HISTORY if m["room"] == room]
+        items = [m for m in _HISTORY if m["room"] == room and m.get("role") != "system"]
         return items[-limit:]
 
     @socketio.on("connect", namespace=NAMESPACE)
@@ -42,22 +52,19 @@ def register_chat_bot_socketio_events(socketio):
         if history:
             emit(
                 "chat",
-                {
-                    "type": "history",
-                    "items": history,
-                    "ts": _now_iso(),
-                },
+                {"type": "history", "items": history, "ts": _now_iso()},
                 to=sid,
                 namespace=NAMESPACE,
             )
+            _ROOM_HAS_SYSTEM.discard(room)
         else:
             system_msg = {
                 "type": "system",
-                "text": f"Connected to {NAMESPACE}",
+                "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
                 "ts": _now_iso(),
             }
             emit("chat", system_msg, to=sid, namespace=NAMESPACE)
-            _append(room, "system", system_msg["text"])
+            _ROOM_HAS_SYSTEM.add(room)
 
     @socketio.on("disconnect", namespace=NAMESPACE)
     def handle_disconnect():
@@ -68,6 +75,15 @@ def register_chat_bot_socketio_events(socketio):
     def handle_chat(data):
         room = (data or {}).get("room", DEFAULT_ROOM)
         text = (data or {}).get("text", "").strip()
+
+        if room in _ROOM_HAS_SYSTEM:
+            emit(
+                "chat",
+                {"type": "system_clear", "ts": _now_iso()},
+                to=room,
+                namespace=NAMESPACE,
+            )
+            _ROOM_HAS_SYSTEM.discard(room)
 
         user_msg = {"type": "user", "text": text, "ts": _now_iso()}
         emit("chat", user_msg, to=room, namespace=NAMESPACE)
