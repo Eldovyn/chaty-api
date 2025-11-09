@@ -1,5 +1,6 @@
 from flask_socketio import emit, join_room
 from flask import request
+import uuid
 import datetime
 from ..utils import GeminiAI
 
@@ -7,7 +8,7 @@ from ..utils import GeminiAI
 def register_chat_bot_socketio_events(socketio):
     NAMESPACE = "/chat-bot"
     api_gemini = GeminiAI()
-    DEFAULT_ROOM = "global"
+    DEFAULT_ROOM = None  # kita tak pakai 'global' lagi sebagai default
 
     _HISTORY = []
     _HISTORY_CAP = 2000
@@ -27,25 +28,38 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > _HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
 
-    def _append_db(room: str, role: str, text: str):
-        if role == "system":
-            return
-        _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
-        if len(_HISTORY) > _HISTORY_CAP:
-            del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
-
     def _history_for_room(room: str, limit: int = 200):
         items = [m for m in _HISTORY if m["room"] == room and m.get("role") != "system"]
         return items[-limit:]
 
+    def _ensure_room(room: str) -> str:
+        """Return given room or create a new one when falsy/invalid."""
+        r = (room or "").strip()
+        if not r:
+            r = f"room-{uuid.uuid4().hex}"
+        return r
+
     @socketio.on("connect", namespace=NAMESPACE)
     def handle_connect():
         sid = request.sid
-        room = DEFAULT_ROOM
-        join_room(room, namespace=NAMESPACE)
+
+        # coba ambil room dari query atau auth (opsional, sesuai client)
+        room = request.args.get("room") or (request.args.get("room_id"))
+        room = _ensure_room(room)
+
+        # join (idempotent)
+        join_room(room, sid=sid, namespace=NAMESPACE)
 
         print(
             f"[connect] ns={NAMESPACE} sid={sid} room={room} ip={request.remote_addr}"
+        )
+
+        # beritahu klien room mana yang dipakai (kalau klien belum punya)
+        emit(
+            "room_created",
+            {"room": room, "ts": _now_iso()},
+            to=sid,
+            namespace=NAMESPACE,
         )
 
         history = _history_for_room(room)
@@ -73,8 +87,13 @@ def register_chat_bot_socketio_events(socketio):
 
     @socketio.on("chat", namespace=NAMESPACE)
     def handle_chat(data):
-        room = (data or {}).get("room", DEFAULT_ROOM)
+        sid = request.sid
+        # kalau klien tidak kirim room, kita buat baru dan join
+        room = _ensure_room((data or {}).get("room"))
         text = (data or {}).get("text", "").strip()
+
+        # pastikan sender sudah join room (aman dipanggil berkali-kali)
+        join_room(room, sid=sid, namespace=NAMESPACE)
 
         if room in _ROOM_HAS_SYSTEM:
             emit(
@@ -85,12 +104,17 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
 
-        user_msg = {"type": "user", "text": text, "ts": _now_iso()}
+        user_msg = {"type": "user", "text": text, "ts": _now_iso(), "room": room}
         emit("chat", user_msg, to=room, namespace=NAMESPACE)
         _append(room, "user", text)
 
         bot_response = api_gemini.generate_sync(text)
 
-        assistant_msg = {"type": "assistant", "text": bot_response, "ts": _now_iso()}
+        assistant_msg = {
+            "type": "assistant",
+            "text": bot_response,
+            "ts": _now_iso(),
+            "room": room,
+        }
         emit("chat", assistant_msg, to=room, namespace=NAMESPACE)
         _append(room, "assistant", bot_response)
