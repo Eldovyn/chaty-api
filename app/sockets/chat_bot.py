@@ -1,85 +1,80 @@
-from flask_socketio import send, emit, disconnect
+from flask_socketio import emit, join_room
 from flask import request
-from ..utils import (
-    AuthJwt,
-)
-from ..models import UserModel, BlacklistTokenModel
 import datetime
-from databases import ChatHistoryDatabase, RoomChatDatabase
-from serializers import ChatHistorySerializer
+from ..utils import GeminiAI
 
 
 def register_chat_bot_socketio_events(socketio):
-    chat_history_serializer = ChatHistorySerializer()
+    NAMESPACE = "/chat-bot"
+    api_gemini = GeminiAI()
+    DEFAULT_ROOM = "global"
 
-    @socketio.on("connect", namespace="/chat-bot")
-    def handle_connect():
-        print(f"User connected from IP: {request.remote_addr}")
+    _HISTORY = []
+    _HISTORY_CAP = 2000
 
-    @socketio.on("disconnect", namespace="/chat-bot")
-    def handle_disconnect():
-        print(f"User disconnected from IP: {request.remote_addr}")
-
-    @socketio.on("join", namespace="/chat-bot")
-    def handle_join(data):
-        token = request.headers.get(
-            "Authorization",
-            "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI2OTAxZDhlN2JmOWJkYTAzNWFmMzIyNWMiLCJpYXQiOjE3NjIxNDA0OTJ9.uh1AaMmfa9QJy1wuRTL6hnMbhML6wAmSUk8P-8AECeuC1EEmjzBdqI1t1eB3jWEF6vbn-o4V9hEtsFqXRa2Q8fz_Ysg3OQ57U2T_cIqtjOTHxVuBhOV6niu484oSjPLaHlUbH1mjAzVUxDlOK2oya44UPKViG5ixG0Ka0UbYAYpdqmWFJMIaDyaRvaGgR8JscI_Ciw0qFk9xeGb9Z_vda4bWwB1HrDvMKkM0_QDVCZMUhgUAYH_VqFII61Zcp-sSXgLBwMT7doTnNJjMY5xcn2yD3BiqGSfBLM6kxMYRyeU-0_RhZ1rtSlJeCaQN9BmA7VDu0WBAHjOgckjZpT8a1A",
+    def _now_iso():
+        return (
+            datetime.datetime.now(datetime.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
         )
-        room_id = data.get("room_id")
-        if not token:
-            disconnect()
-            return
 
-        payload = AuthJwt.verify_token_sync(token)
-        if not payload:
-            disconnect()
-            return
+    def _append(room: str, role: str, text: str):
+        _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
+        if len(_HISTORY) > _HISTORY_CAP:
+            del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
 
-        user_id = payload.get("sub")
-        if not user_id:
-            disconnect()
-            return
+    def _history_for_room(room: str, limit: int = 200):
+        items = [m for m in _HISTORY if m["room"] == room]
+        return items[-limit:]
 
-        user = UserModel.objects(id=user_id).first()
-        if not user:
-            disconnect()
-            return
+    @socketio.on("connect", namespace=NAMESPACE)
+    def handle_connect():
+        sid = request.sid
+        room = DEFAULT_ROOM
+        join_room(room, namespace=NAMESPACE)
 
-        iat = payload.get("iat")
-        issued_time = datetime.datetime.fromtimestamp(iat, tz=datetime.timezone.utc)
-        ua = user.updated_at
-        if ua.tzinfo is None:
-            ua = ua.replace(tzinfo=datetime.timezone.utc)
+        print(
+            f"[connect] ns={NAMESPACE} sid={sid} room={room} ip={request.remote_addr}"
+        )
 
-        SKEW = datetime.timedelta(seconds=60)
-        if ua and (issued_time + SKEW) < ua:
-            disconnect()
-            return
-
-        jti = payload.get("jti")
-        if jti and BlacklistTokenModel.objects(jti=jti).first():
-            disconnect()
-            return
-
-        if not user.is_active:
-            disconnect()
-            return
-
-        if not (
-            room_data := RoomChatDatabase.get_sync(
-                "get_room_by_room_id", room_id=room_id, user_id=user_id
+        history = _history_for_room(room)
+        if history:
+            emit(
+                "chat",
+                {
+                    "type": "history",
+                    "items": history,
+                    "ts": _now_iso(),
+                },
+                to=sid,
+                namespace=NAMESPACE,
             )
-        ):
-            room_id = None
+        else:
+            system_msg = {
+                "type": "system",
+                "text": f"Connected to {NAMESPACE}",
+                "ts": _now_iso(),
+            }
+            emit("chat", system_msg, to=sid, namespace=NAMESPACE)
+            _append(room, "system", system_msg["text"])
 
-        chat_list = []
-        if room_id:
-            if chat_history := ChatHistoryDatabase.get_sync(
-                "get_chat_history_by_user_id", room_id=room_id, user_id=user_id
-            ):
-                for chat in chat_history:
-                    chat_list.append(chat_history_serializer.serialize(chat))
+    @socketio.on("disconnect", namespace=NAMESPACE)
+    def handle_disconnect():
+        sid = request.sid
+        print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
 
-            send(f"{user.username} joined the room.", to=room_id)
-            emit("chat:history", chat_list, to=room_id)
+    @socketio.on("chat", namespace=NAMESPACE)
+    def handle_chat(data):
+        room = (data or {}).get("room", DEFAULT_ROOM)
+        text = (data or {}).get("text", "").strip()
+
+        user_msg = {"type": "user", "text": text, "ts": _now_iso()}
+        emit("chat", user_msg, to=room, namespace=NAMESPACE)
+        _append(room, "user", text)
+
+        bot_response = api_gemini.generate_sync(text)
+
+        assistant_msg = {"type": "assistant", "text": bot_response, "ts": _now_iso()}
+        emit("chat", assistant_msg, to=room, namespace=NAMESPACE)
+        _append(room, "assistant", bot_response)

@@ -1,77 +1,111 @@
 <!doctype html>
-<html>
+<html lang="id">
 <head>
   <meta charset="utf-8" />
-  <title>Chat Bot</title>
-  <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+  <title>Chat Bot – /chat-bot</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <!-- Socket.IO client (tanpa integrity supaya tidak diblok SRI mismatch) -->
+
   <style>
-    body { font-family: system-ui, Arial, sans-serif; margin: 20px; }
-    #log { border: 1px solid #ccc; padding: 10px; height: 240px; overflow: auto; }
+    :root { --bg:#0b1020; --panel:#121a33; --muted:#98a2b3; --text:#f8fafc; --user:#1e88e5; --assistant:#14b8a6; --system:#a78bfa; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, "Helvetica Neue", Arial; background: var(--bg); color: var(--text); }
+    header { padding: 16px 20px; border-bottom: 1px solid #263052; display:flex; align-items:center; gap:10px; }
+    header .dot { width:10px; height:10px; border-radius:50%; background:#f43f5e; transition: background .2s; }
+    header .dot.connected { background:#22c55e; }
+    header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    #chat { height: calc(100vh - 140px); overflow-y: auto; padding: 20px; }
+    .msg { max-width: 780px; margin: 8px 0; padding: 12px 14px; border-radius: 14px; background: var(--panel); line-height: 1.5; border: 1px solid #1b2444; }
+    .msg.user { border-left: 4px solid var(--user); }
+    .msg.assistant { border-left: 4px solid var(--assistant); }
+    .msg.system { border-left: 4px solid var(--system); opacity:.95; }
+    .meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+    .role { text-transform: uppercase; letter-spacing: .06em; }
+    .input-bar { border-top: 1px solid #263052; padding: 12px 16px; display:flex; gap:10px; }
+    .input-bar input[type="text"] { flex:1; padding: 12px 14px; border-radius: 12px; border: 1px solid #32406e; background: #0f1630; color: var(--text); outline:none; }
+    .input-bar button { padding: 12px 16px; border-radius: 12px; border: 1px solid #32406e; background: #1b2a56; color: var(--text); cursor: pointer; }
+    .input-bar button:hover { background: #203264; }
+    .empty { color: var(--muted); font-style: italic; }
   </style>
 </head>
 <body>
-  <h1>Chat Room</h1>
-  <label>Room ID: <input id="room" value="room-123" /></label>
-  <div id="log"></div>
+  <header>
+    <div id="status-dot" class="dot" aria-hidden="true"></div>
+    <h1>/chat-bot</h1>
+    <div id="status" style="margin-left:auto; font-size:12px; color:var(--muted)">menghubungkan…</div>
+  </header>
 
+  <main id="chat" aria-live="polite" aria-atomic="false">
+    <div id="empty" class="empty">Belum ada pesan. Mulai ngobrol di bawah ✨</div>
+  </main>
+
+  <form id="form" class="input-bar" autocomplete="off">
+    <input id="text" type="text" placeholder="Tulis pesan kamu…" />
+    <button id="send" type="submit">Kirim</button>
+  </form>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js" crossorigin="anonymous"></script>
   <script>
-    const token = "Bearer <JWT_KAMU_DI_SINI>";
+    const socket = io("/chat-bot", { path: "/socket.io" });
 
-    // Ambil room dari input atau dari query ?room=...
-    const getRoomId = () => {
-      const urlRoom = new URLSearchParams(location.search).get("room");
-      return (urlRoom || document.getElementById("room").value || "").trim();
-    };
+    const chatEl = document.getElementById("chat");
+    const statusEl = document.getElementById("status");
+    const dotEl = document.getElementById("status-dot");
+    const formEl = document.getElementById("form");
+    const inputEl = document.getElementById("text");
+    const emptyEl = document.getElementById("empty");
 
-    // Connect ke namespace "/chat-bot" dengan auth token
-    const socket = io("/chat-bot", {
-      transports: ["websocket"],
-      auth: { token },
+    function escapeHTML(s) {
+      return (s || "").toString().replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    function addMsg(role, text, ts) {
+      if (emptyEl && emptyEl.parentNode) emptyEl.parentNode.removeChild(emptyEl);
+
+      const div = document.createElement("div");
+      div.className = `msg ${role}`;
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.innerHTML = `<span class="role">${escapeHTML(role)}</span> • <span class="ts">${escapeHTML(new Date(ts || Date.now()).toLocaleString())}</span>`;
+      const body = document.createElement("div");
+      body.className = "body";
+      body.innerHTML = escapeHTML(text || "");
+      div.appendChild(meta);
+      div.appendChild(body);
+      chatEl.appendChild(div);
+
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
+
+    socket.on("connect", (data) => {
+      statusEl.textContent = `terhubung (sid: ${socket.id})`;
+      dotEl.classList.add("connected");
     });
 
-    const log = (msg) => {
-      const el = document.getElementById("log");
-      el.innerHTML += `<div>${msg}</div>`;
-      el.scrollTop = el.scrollHeight;
-    };
+    socket.on("disconnect", () => {
+      statusEl.textContent = "terputus";
+      dotEl.classList.remove("connected");
+    });
 
-    // Begitu connect (termasuk setelah auto-reconnect), langsung emit join
-    socket.on("connect", () => {
-      const room_id = getRoomId();
-      if (room_id) {
-        socket.emit("join", { room_id });
-        log(`connected: ${socket.id} → auto-join room "${room_id}"`);
-      } else {
-        log("connected, tapi room_id kosong");
+    socket.on("chat", (payload) => {
+      console.log(payload)
+      if (!payload || !payload.type) return;
+
+      if (payload.type === "history") {
+        const items = Array.isArray(payload.items) ? payload.items : [];
+        items.forEach(item => addMsg(item.role || "system", item.text || "", item.ts));
+        return;
       }
+
+      addMsg(payload.type, payload.text || "", payload.ts);
     });
 
-    socket.on("connect_error", (err) => {
-      log(`connect_error: ${err.message}`);
-    });
-
-    socket.on("disconnect", (reason) => {
-      log(`disconnected: ${reason}`);
-    });
-
-    // Pesan dari server via send() → event "message"
-    socket.on("message", (data) => {
-      log(`[message] ${typeof data === "string" ? data : JSON.stringify(data)}`);
-    });
-
-    // Histori chat dari server via emit("chat:history", ...)
-    socket.on("chat:history", (chatList) => {
-      log(`[chat:history] ${chatList.length} item`);
-      chatList.forEach((c) => log(`• ${JSON.stringify(c)}`));
-    });
-
-    // Kalau user mengubah room di input, langsung join ulang
-    document.getElementById("room").addEventListener("change", (e) => {
-      const room_id = getRoomId();
-      if (socket.connected && room_id) {
-        socket.emit("join", { room_id });
-        log(`switched → join room "${room_id}"`);
-      }
+    formEl.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const text = inputEl.value.trim();
+      if (!text) return;
+      socket.emit("chat", { text });
+      inputEl.value = "";
+      inputEl.focus();
     });
   </script>
 </body>
