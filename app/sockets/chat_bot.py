@@ -1,8 +1,9 @@
-from flask_socketio import emit, join_room
+from flask_socketio import emit, join_room, disconnect
 from flask import request
 import uuid
 import datetime
-from ..utils import GeminiAI
+from ..utils import GeminiAI, AuthJwt
+from ..models import UserModel, BlacklistTokenModel
 
 
 def register_chat_bot_socketio_events(socketio):
@@ -39,22 +40,6 @@ def register_chat_bot_socketio_events(socketio):
 
     def _generate_new_room_id() -> str:
         return f"room-{uuid.uuid4().hex}"
-
-    def _resolve_room_from_auth_or_args(auth) -> str:
-        room = None
-
-        if isinstance(auth, dict):
-            room = (auth.get("room") or "").strip()
-
-        if not room:
-            room = (
-                request.args.get("room") or request.args.get("room_id") or ""
-            ).strip()
-
-        if not room:
-            room = _generate_new_room_id()
-
-        return room
 
     def _ensure_room_for_sid(sid: str, payload_room: str | None) -> str:
         room = (payload_room or _SID_ROOM.get(sid) or "").strip()
@@ -117,9 +102,51 @@ def register_chat_bot_socketio_events(socketio):
             _ROOM_HAS_SYSTEM.discard(room)
 
     @socketio.on("connect", namespace=NAMESPACE)
-    def handle_connect(auth=None):
+    def handle_connect(auth):
         sid = request.sid
-        room = _resolve_room_from_auth_or_args(auth)
+        token = auth.get("token")
+        room = auth.get("room")
+        if not token:
+            disconnect(sid=sid)
+            return
+
+        payload = AuthJwt.verify_token_sync(token)
+        if payload is None:
+            disconnect(sid=sid)
+            return
+
+        user_id = payload.get("sub")
+        if not user_id:
+            disconnect(sid=sid)
+            return
+
+        user = UserModel.objects(id=user_id).first()
+        if not user:
+            disconnect(sid=sid)
+            return
+
+        iat = payload.get("iat")
+        issued_time = datetime.datetime.fromtimestamp(iat, tz=datetime.timezone.utc)
+        ua = user.updated_at
+        if ua.tzinfo is None:
+            ua = ua.replace(tzinfo=datetime.timezone.utc)
+
+        SKEW = datetime.timedelta(seconds=60)
+        if ua and (issued_time + SKEW) < ua:
+            disconnect(sid=sid)
+            return
+
+        jti = payload.get("jti")
+        if jti and BlacklistTokenModel.objects(jti=jti).first():
+            disconnect(sid=sid)
+            return
+
+        if not user.is_active:
+            disconnect(sid=sid)
+            return
+
+        if not room:
+            room = _generate_new_room_id()
 
         join_room(room, sid=sid, namespace=NAMESPACE)
         _SID_ROOM[sid] = room
