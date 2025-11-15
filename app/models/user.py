@@ -9,7 +9,7 @@ class UserModel(BaseDocument):
     provider = me.StringField(required=True)
     avatar = me.StringField(required=True)
     role = me.StringField(required=False, default="user")
-    is_active = me.BooleanField(required=False, default=False)
+    is_active = me.BooleanField(required=False, default=True)
     updated_email_at = me.DateTimeField(required=False)
 
     meta = {"collection": "users"}

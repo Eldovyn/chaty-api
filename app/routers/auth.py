@@ -29,6 +29,27 @@ async def user_login():
     )
 
 
+@auth_router.post("/register")
+async def user_register():
+    data = request.json
+    timestamp = request.timestamp
+    username = data.get("username", "")
+    email = data.get("email", "")
+    password = data.get("password", "")
+    confirm_password = data.get("confirm_password", "")
+    provider = data.get("provider", "")
+    token = data.get("token", "")
+    return await register_controller.user_register(
+        provider,
+        token,
+        username,
+        email,
+        password,
+        confirm_password,
+        timestamp,
+    )
+
+
 @auth_router.post("/logout")
 @jwt_required()
 async def user_logout():
@@ -110,24 +131,3 @@ async def otp_email():
     user = request.user
     timestamp = request.timestamp
     return await otp_email_controller.otp_email(user, timestamp)
-
-
-@auth_router.post("/register")
-async def user_register():
-    data = request.json
-    timestamp = request.timestamp
-    username = data.get("username", "")
-    email = data.get("email", "")
-    password = data.get("password", "")
-    confirm_password = data.get("confirm_password", "")
-    provider = data.get("provider", "")
-    token = data.get("token", "")
-    return await register_controller.user_register(
-        provider,
-        token,
-        username,
-        email,
-        password,
-        confirm_password,
-        timestamp,
-    )

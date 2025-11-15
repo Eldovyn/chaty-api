@@ -7,62 +7,64 @@ from ..utils import GeminiAI
 
 def register_chat_bot_socketio_events(socketio):
     NAMESPACE = "/chat-bot"
+    HISTORY_CAP = 2000
+
     api_gemini = GeminiAI()
-    DEFAULT_ROOM = None  # kita tak pakai 'global' lagi sebagai default
 
     _HISTORY = []
-    _HISTORY_CAP = 2000
+
     _ROOM_HAS_SYSTEM = set()
 
-    def _now_iso():
+    _SID_ROOM = {}
+
+    def _now_iso() -> str:
         return (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
             .replace("+00:00", "Z")
         )
 
-    def _append(room: str, role: str, text: str):
+    def _append_message(room: str, role: str, text: str) -> None:
         if role == "system":
             return
-        _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
-        if len(_HISTORY) > _HISTORY_CAP:
-            del _HISTORY[: len(_HISTORY) - _HISTORY_CAP]
 
-    def _history_for_room(room: str, limit: int = 200):
+        _HISTORY.append({"room": room, "role": role, "text": text, "ts": _now_iso()})
+
+        if len(_HISTORY) > HISTORY_CAP:
+            del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
+
+    def _get_history_for_room(room: str, limit: int = 200):
         items = [m for m in _HISTORY if m["room"] == room and m.get("role") != "system"]
         return items[-limit:]
 
-    def _ensure_room(room: str) -> str:
-        """Return given room or create a new one when falsy/invalid."""
-        r = (room or "").strip()
-        if not r:
-            r = f"room-{uuid.uuid4().hex}"
-        return r
+    def _generate_new_room_id() -> str:
+        return f"room-{uuid.uuid4().hex}"
 
-    @socketio.on("connect", namespace=NAMESPACE)
-    def handle_connect():
-        sid = request.sid
+    def _resolve_room_from_auth_or_args(auth) -> str:
+        room = None
 
-        # coba ambil room dari query atau auth (opsional, sesuai client)
-        room = request.args.get("room") or (request.args.get("room_id"))
-        room = _ensure_room(room)
+        if isinstance(auth, dict):
+            room = (auth.get("room") or "").strip()
 
-        # join (idempotent)
-        join_room(room, sid=sid, namespace=NAMESPACE)
+        if not room:
+            room = (
+                request.args.get("room") or request.args.get("room_id") or ""
+            ).strip()
 
-        print(
-            f"[connect] ns={NAMESPACE} sid={sid} room={room} ip={request.remote_addr}"
-        )
+        if not room:
+            room = _generate_new_room_id()
 
-        # beritahu klien room mana yang dipakai (kalau klien belum punya)
-        emit(
-            "room_created",
-            {"room": room, "ts": _now_iso()},
-            to=sid,
-            namespace=NAMESPACE,
-        )
+        return room
 
-        history = _history_for_room(room)
+    def _ensure_room_for_sid(sid: str, payload_room: str | None) -> str:
+        room = (payload_room or _SID_ROOM.get(sid) or "").strip()
+        if not room:
+            room = _generate_new_room_id()
+            _SID_ROOM[sid] = room
+        return room
+
+    def _send_initial_message_or_history(sid: str, room: str) -> None:
+        history = _get_history_for_room(room)
         if history:
             emit(
                 "chat",
@@ -72,29 +74,39 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
         else:
-            system_msg = {
-                "type": "system",
-                "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
-                "ts": _now_iso(),
-            }
-            emit("chat", system_msg, to=sid, namespace=NAMESPACE)
+            emit(
+                "chat",
+                {
+                    "type": "system",
+                    "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
+                    "ts": _now_iso(),
+                },
+                to=sid,
+                namespace=NAMESPACE,
+            )
             _ROOM_HAS_SYSTEM.add(room)
 
-    @socketio.on("disconnect", namespace=NAMESPACE)
-    def handle_disconnect():
-        sid = request.sid
-        print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
+    def _send_user_message(room: str, text: str) -> None:
+        message = {
+            "type": "user",
+            "text": text,
+            "ts": _now_iso(),
+            "room": room,
+        }
+        emit("chat", message, to=room, namespace=NAMESPACE)
+        _append_message(room, "user", text)
 
-    @socketio.on("chat", namespace=NAMESPACE)
-    def handle_chat(data):
-        sid = request.sid
-        # kalau klien tidak kirim room, kita buat baru dan join
-        room = _ensure_room((data or {}).get("room"))
-        text = (data or {}).get("text", "").strip()
+    def _send_assistant_message(room: str, text: str) -> None:
+        message = {
+            "type": "assistant",
+            "text": text,
+            "ts": _now_iso(),
+            "room": room,
+        }
+        emit("chat", message, to=room, namespace=NAMESPACE)
+        _append_message(room, "assistant", text)
 
-        # pastikan sender sudah join room (aman dipanggil berkali-kali)
-        join_room(room, sid=sid, namespace=NAMESPACE)
-
+    def _clear_system_message_if_needed(room: str) -> None:
         if room in _ROOM_HAS_SYSTEM:
             emit(
                 "chat",
@@ -104,17 +116,50 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
 
-        user_msg = {"type": "user", "text": text, "ts": _now_iso(), "room": room}
-        emit("chat", user_msg, to=room, namespace=NAMESPACE)
-        _append(room, "user", text)
+    @socketio.on("connect", namespace=NAMESPACE)
+    def handle_connect(auth=None):
+        sid = request.sid
+        room = _resolve_room_from_auth_or_args(auth)
+
+        join_room(room, sid=sid, namespace=NAMESPACE)
+        _SID_ROOM[sid] = room
+
+        print(
+            f"[connect] ns={NAMESPACE} sid={sid} room={room} ip={request.remote_addr}"
+        )
+
+        emit(
+            "room_created",
+            {"room": room, "ts": _now_iso()},
+            to=sid,
+            namespace=NAMESPACE,
+        )
+
+        _send_initial_message_or_history(sid, room)
+
+    @socketio.on("disconnect", namespace=NAMESPACE)
+    def handle_disconnect():
+        sid = request.sid
+        _SID_ROOM.pop(sid, None)
+        print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
+
+    @socketio.on("chat", namespace=NAMESPACE)
+    def handle_chat(data):
+        sid = request.sid
+
+        payload_room = (data or {}).get("room")
+        room = _ensure_room_for_sid(sid, payload_room)
+
+        text = (data or {}).get("text", "").strip()
+        if not text:
+            return
+
+        join_room(room, sid=sid, namespace=NAMESPACE)
+
+        _clear_system_message_if_needed(room)
+
+        _send_user_message(room, text)
 
         bot_response = api_gemini.generate_sync(text)
 
-        assistant_msg = {
-            "type": "assistant",
-            "text": bot_response,
-            "ts": _now_iso(),
-            "room": room,
-        }
-        emit("chat", assistant_msg, to=room, namespace=NAMESPACE)
-        _append(room, "assistant", bot_response)
+        _send_assistant_message(room, bot_response)
