@@ -15,12 +15,16 @@ def register_chat_bot_socketio_events(socketio):
     _HISTORY = []
     _ROOM_HAS_SYSTEM = set()
     _SID_ROOM = {}
+    _SID_USER = {}
 
     @socketio.on("connect", namespace=NAMESPACE)
     def handle_connect(auth=None):
         sid = request.sid
-        token = auth.get("token")
-        room = auth.get("room")
+
+        auth_data = auth if isinstance(auth, dict) else {}
+        token = auth_data.get("token")
+        room = auth_data.get("room")
+
         if not token:
             disconnect(sid=sid)
             return
@@ -42,8 +46,8 @@ def register_chat_bot_socketio_events(socketio):
 
         iat = payload.get("iat")
         issued_time = datetime.datetime.fromtimestamp(iat, tz=datetime.timezone.utc)
-        ua = user.updated_at
-        if ua.tzinfo is None:
+        ua = getattr(user, "updated_at", None)
+        if ua is not None and ua.tzinfo is None:
             ua = ua.replace(tzinfo=datetime.timezone.utc)
 
         SKEW = datetime.timedelta(seconds=60)
@@ -59,6 +63,8 @@ def register_chat_bot_socketio_events(socketio):
         if not user.is_active:
             disconnect(sid=sid)
             return
+
+        _SID_USER[sid] = user
 
         if not room:
             room = f"room-{uuid.uuid4().hex}"
@@ -83,16 +89,49 @@ def register_chat_bot_socketio_events(socketio):
             namespace=NAMESPACE,
         )
 
-        items = [m for m in _HISTORY if m["room"] == room and m.get("role") != "system"]
-        history = items[-200:]
-
-        if not (user_room := ChatRoomModel.objects(title=room, user=user).first()):
+        user_room = ChatRoomModel.objects(title=room, user=user).first()
+        if not user_room:
             user_room = ChatRoomModel(title=room, user=user)
             user_room.save()
-        if history:
+
+        user_chat_histories = (
+            ChatHistoryModel.objects(room=user_room, user=user)
+            .order_by("id")
+            .limit(200)
+        )
+
+        history_items = []
+        for ch in user_chat_histories:
+            try:
+                created_at = ch.id.generation_time.replace(tzinfo=datetime.timezone.utc)
+            except Exception:
+                created_at = datetime.datetime.now(datetime.timezone.utc)
+
+            ts_iso = created_at.isoformat().replace("+00:00", "Z")
+
+            history_items.append(
+                {
+                    "room": room,
+                    "role": "user",
+                    "text": ch.original_message,
+                    "ts": ts_iso,
+                }
+            )
+            history_items.append(
+                {
+                    "room": room,
+                    "role": "assistant",
+                    "text": ch.response_message,
+                    "ts": ts_iso,
+                }
+            )
+
+        history_items = history_items[-200:]
+
+        if history_items:
             emit(
                 "chat",
-                {"type": "history", "items": history, "ts": now_ts},
+                {"type": "history", "items": history_items, "ts": now_ts},
                 to=sid,
                 namespace=NAMESPACE,
             )
@@ -118,6 +157,7 @@ def register_chat_bot_socketio_events(socketio):
     def handle_disconnect():
         sid = request.sid
         _SID_ROOM.pop(sid, None)
+        _SID_USER.pop(sid, None)
         print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
 
     @socketio.on("chat", namespace=NAMESPACE)
@@ -126,12 +166,10 @@ def register_chat_bot_socketio_events(socketio):
 
         payload_room = (data or {}).get("room")
 
-        # === inline _ensure_room_for_sid ===
         room = (payload_room or _SID_ROOM.get(sid) or "").strip()
         if not room:
             room = f"room-{uuid.uuid4().hex}"
             _SID_ROOM[sid] = room
-        # === end inline _ensure_room_for_sid ===
 
         text = (data or {}).get("text", "").strip()
         if not text:
@@ -139,7 +177,6 @@ def register_chat_bot_socketio_events(socketio):
 
         join_room(room, sid=sid, namespace=NAMESPACE)
 
-        # === inline _clear_system_message_if_needed ===
         if room in _ROOM_HAS_SYSTEM:
             now_ts_clear = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -153,9 +190,7 @@ def register_chat_bot_socketio_events(socketio):
                 namespace=NAMESPACE,
             )
             _ROOM_HAS_SYSTEM.discard(room)
-        # === end inline _clear_system_message_if_needed ===
 
-        # === inline _send_user_message + _append_message ===
         now_ts_user = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -173,8 +208,10 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
+        # panggil LLM
         bot_response = api_gemini.generate_sync(text)
 
+        # === kirim pesan assistant + simpan di in-memory history ===
         now_ts_assistant = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -198,3 +235,21 @@ def register_chat_bot_socketio_events(socketio):
         )
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
+
+        # ====== simpan ke DB (ChatHistoryModel) ======
+        user = _SID_USER.get(sid)
+
+        if user is not None:
+            user_room = ChatRoomModel.objects(title=room, user=user).first()
+            if not user_room:
+                user_room = ChatRoomModel(title=room, user=user)
+                user_room.save()
+
+            ChatHistoryModel(
+                original_message=text,
+                response_message=bot_response,
+                links=[],
+                role="assistant",
+                user=user,
+                room=user_room,
+            ).save()
