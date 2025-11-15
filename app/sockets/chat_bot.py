@@ -89,44 +89,49 @@ def register_chat_bot_socketio_events(socketio):
             namespace=NAMESPACE,
         )
 
+        # ============================
+        # TIDAK LAGI CREATE ChatRoomModel DI SINI
+        # Hanya ambil kalau sudah ada, untuk load history.
+        # ============================
         user_room = ChatRoomModel.objects(title=room, user=user).first()
-        if not user_room:
-            user_room = ChatRoomModel(title=room, user=user)
-            user_room.save()
-
-        user_chat_histories = (
-            ChatHistoryModel.objects(room=user_room, user=user)
-            .order_by("id")
-            .limit(200)
-        )
 
         history_items = []
-        for ch in user_chat_histories:
-            try:
-                created_at = ch.id.generation_time.replace(tzinfo=datetime.timezone.utc)
-            except Exception:
-                created_at = datetime.datetime.now(datetime.timezone.utc)
 
-            ts_iso = created_at.isoformat().replace("+00:00", "Z")
-
-            history_items.append(
-                {
-                    "room": room,
-                    "role": "user",
-                    "text": ch.original_message,
-                    "ts": ts_iso,
-                }
-            )
-            history_items.append(
-                {
-                    "room": room,
-                    "role": "assistant",
-                    "text": ch.response_message,
-                    "ts": ts_iso,
-                }
+        if user_room is not None:
+            user_chat_histories = (
+                ChatHistoryModel.objects(room=user_room, user=user)
+                .order_by("id")
+                .limit(200)
             )
 
-        history_items = history_items[-200:]
+            for ch in user_chat_histories:
+                try:
+                    created_at = ch.id.generation_time.replace(
+                        tzinfo=datetime.timezone.utc
+                    )
+                except Exception:
+                    created_at = datetime.datetime.now(datetime.timezone.utc)
+
+                ts_iso = created_at.isoformat().replace("+00:00", "Z")
+
+                history_items.append(
+                    {
+                        "room": room,
+                        "role": "user",
+                        "text": ch.original_message,
+                        "ts": ts_iso,
+                    }
+                )
+                history_items.append(
+                    {
+                        "room": room,
+                        "role": "assistant",
+                        "text": ch.response_message,
+                        "ts": ts_iso,
+                    }
+                )
+
+            history_items = history_items[-200:]
 
         if history_items:
             emit(
