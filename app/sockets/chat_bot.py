@@ -3,7 +3,7 @@ from flask import request
 import uuid
 import datetime
 from ..utils import GeminiAI, AuthJwt
-from ..models import UserModel, BlacklistTokenModel
+from ..models import UserModel, BlacklistTokenModel, ChatRoomModel, ChatHistoryModel
 
 
 def register_chat_bot_socketio_events(socketio):
@@ -162,7 +162,10 @@ def register_chat_bot_socketio_events(socketio):
             namespace=NAMESPACE,
         )
 
-        _send_initial_message_or_history(sid, room)
+        # _send_initial_message_or_history(sid, room)
+        items = []
+        if not (user_room := ChatRoomModel.objects(title=room, user=user).first()):
+            
 
     @socketio.on("disconnect", namespace=NAMESPACE)
     def handle_disconnect():
