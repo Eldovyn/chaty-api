@@ -89,10 +89,6 @@ def register_chat_bot_socketio_events(socketio):
             namespace=NAMESPACE,
         )
 
-        # ============================
-        # TIDAK LAGI CREATE ChatRoomModel DI SINI
-        # Hanya ambil kalau sudah ada, untuk load history.
-        # ============================
         user_room = ChatRoomModel.objects(title=room, user=user).first()
 
         history_items = []
@@ -258,3 +254,37 @@ def register_chat_bot_socketio_events(socketio):
                 user=user,
                 room=user_room,
             ).save()
+
+            # >>> EMIT LIST ROOM CHAT TERBARU <<<
+            # ambil semua room milik user, misalnya diurutkan dari updated_at terbaru
+            latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None).order_by(
+                "-updated_at"
+            )
+
+            room_items = []
+            for r in latest_rooms:
+                room_items.append(
+                    {
+                        "id": str(r.id),
+                        "title": r.title,
+                        "created_at": (
+                            r.created_at.isoformat()
+                            if getattr(r, "created_at", None)
+                            else None
+                        ),
+                        "updated_at": (
+                            r.updated_at.isoformat()
+                            if getattr(r, "updated_at", None)
+                            else None
+                        ),
+                    }
+                )
+
+            # kirim ke client (hanya ke user/sid ini)
+            emit(
+                "rooms_updated",
+                {"rooms": room_items},
+                to=sid,
+                namespace=NAMESPACE,
+            )
+            # <<< END EMIT LIST ROOM CHAT TERBARU <<<
