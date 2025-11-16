@@ -27,3 +27,15 @@ class ChatRoomController:
             jsonify({"message": "success get all rooms", "data": data_rooms_serialize}),
             200,
         )
+
+    async def clear_rooms(self, user):
+        if not (
+            data_rooms := await RoomChatDatabase.get(
+                "get_all_rooms_by_user_id", user_id=user.id
+            )
+        ):
+            return jsonify({"message": "chat rooms not found"}), 404
+        await RoomChatDatabase.delete(
+            "delete_all_rooms_by_user_id", user_id=f"{user.id}"
+        )
+        return jsonify({"message": "successfully clear all chat rooms"}), 201
