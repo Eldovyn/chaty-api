@@ -2,9 +2,9 @@ from flask_socketio import emit, join_room, disconnect
 from flask import request
 import uuid
 import datetime
-
-from ..utils import GeminiAI, AuthJwt
+from ..utils import GeminiAI, AuthJwt, ImageKitImageGenerator
 from ..models import UserModel, BlacklistTokenModel, ChatHistoryModel, ChatRoomModel
+from ..serializers import RoomChatSerializer, ChatHistorySerializer
 
 
 def register_chat_bot_socketio_events(socketio):
@@ -12,6 +12,9 @@ def register_chat_bot_socketio_events(socketio):
     HISTORY_CAP = 2000
 
     api_gemini = GeminiAI()
+    image_generator = ImageKitImageGenerator()
+    room_chat_serializer = RoomChatSerializer()
+    chat_history_serializer = ChatHistorySerializer()
 
     _HISTORY = []
     _ROOM_HAS_SYSTEM = set()
@@ -117,14 +120,17 @@ def register_chat_bot_socketio_events(socketio):
                         "role": "user",
                         "text": ch.original_message,
                         "ts": ts_iso,
+                        "is_image": False,
                     }
                 )
+
                 history_items.append(
                     {
                         "room": room,
                         "role": "assistant",
                         "text": ch.response_message,
                         "ts": ts_iso,
+                        "is_image": getattr(ch, "is_image", False),
                     }
                 )
 
@@ -177,10 +183,8 @@ def register_chat_bot_socketio_events(socketio):
         if not text:
             return
 
-        # pastikan user join ke room
         join_room(room, sid=sid, namespace=NAMESPACE)
 
-        # kalau ada system message "Belum ada pesan...", hapus
         if room in _ROOM_HAS_SYSTEM:
             now_ts_clear = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -195,7 +199,6 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
 
-        # ====== kirim pesan user ke client ======
         now_ts_user = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -213,8 +216,9 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
-        # ====== panggil LLM untuk jawaban ======
-        bot_response = api_gemini.generate_sync(text)
+        bot_result = api_gemini.handle_image_prompt(text, image_generator)
+        bot_text = bot_result.get("content", "")
+        is_image = bot_result.get("is_image", False)
 
         now_ts_assistant = (
             datetime.datetime.now(datetime.timezone.utc)
@@ -223,9 +227,10 @@ def register_chat_bot_socketio_events(socketio):
         )
         assistant_message = {
             "type": "assistant",
-            "text": bot_response,
+            "text": bot_text,
             "ts": now_ts_assistant,
             "room": room,
+            "is_image": is_image,
         }
         emit("chat", assistant_message, to=room, namespace=NAMESPACE)
 
@@ -233,39 +238,37 @@ def register_chat_bot_socketio_events(socketio):
             {
                 "room": room,
                 "role": "assistant",
-                "text": bot_response,
+                "text": bot_text,
                 "ts": now_ts_assistant,
+                "is_image": is_image,
             }
         )
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
-        # ====== simpan ke DB + generate title dari HISTORY ======
         user = _SID_USER.get(sid)
 
         if user is not None:
-            # cari / buat room untuk user ini
             user_room = ChatRoomModel.objects(room=room, user=user).first()
 
             if not user_room:
                 user_room = ChatRoomModel(room=room, user=user)
                 user_room.save()
 
-            # simpan history terkini
             ChatHistoryModel(
                 original_message=text,
-                response_message=bot_response,
+                response_message=bot_text,
                 links=[],
                 role="assistant",
                 user=user,
                 room=user_room,
+                is_image=is_image,
             ).save()
 
-            # ambil beberapa history terakhir dari DB untuk room ini
             histories = (
                 ChatHistoryModel.objects(room=user_room, user=user)
                 .order_by("id")
-                .limit(10)  # misalnya 10 interaksi terakhir
+                .limit(10)
             )
 
             context_list = []
@@ -273,37 +276,17 @@ def register_chat_bot_socketio_events(socketio):
                 context_list.append(f"user: {h.original_message}")
                 context_list.append(f"assistant: {h.response_message}")
 
-            # kalau mau, tambahkan juga pesan terbaru (opsional karena sudah ada di histories)
-            # context_list.append(f"user: {text}")
-            # context_list.append(f"assistant: {bot_response}")
-
-            # generate judul berdasarkan history room
             if context_list:
                 title_room = api_gemini.generate_title_from_context(context_list)
                 user_room.title = title_room
                 user_room.save()
 
-            # >>> EMIT LIST ROOM CHAT TERBARU <<<
             latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
 
             room_items = []
             for r in latest_rooms:
-                room_items.append(
-                    {
-                        "id": str(r.id),
-                        "title": r.title,
-                        "created_at": (
-                            r.created_at.isoformat()
-                            if getattr(r, "created_at", None)
-                            else None
-                        ),
-                        "updated_at": (
-                            r.updated_at.isoformat()
-                            if getattr(r, "updated_at", None)
-                            else None
-                        ),
-                    }
-                )
+                result = room_chat_serializer.serialize(r)
+                room_items.append(result)
             room_items.reverse()
 
             emit(
