@@ -4,7 +4,8 @@ import uuid
 import datetime
 from ..utils import GeminiAI, AuthJwt, ImageKitImageGenerator
 from ..models import UserModel, BlacklistTokenModel, ChatHistoryModel, ChatRoomModel
-from ..serializers import RoomChatSerializer, ChatHistorySerializer
+from ..serializers import RoomChatSerializer
+from .. import _HISTORY, _ROOM_HAS_SYSTEM, _SID_ROOM, _SID_USER
 
 
 def register_chat_bot_socketio_events(socketio):
@@ -14,12 +15,6 @@ def register_chat_bot_socketio_events(socketio):
     api_gemini = GeminiAI()
     image_generator = ImageKitImageGenerator()
     room_chat_serializer = RoomChatSerializer()
-    chat_history_serializer = ChatHistorySerializer()
-
-    _HISTORY = []
-    _ROOM_HAS_SYSTEM = set()
-    _SID_ROOM = {}
-    _SID_USER = {}
 
     @socketio.on("connect", namespace=NAMESPACE)
     def handle_connect(auth=None):
@@ -89,7 +84,7 @@ def register_chat_bot_socketio_events(socketio):
         emit(
             "room_created",
             {"room": room, "ts": now_ts},
-            to=sid,
+            to=room,
             namespace=NAMESPACE,
         )
 
@@ -140,7 +135,7 @@ def register_chat_bot_socketio_events(socketio):
             emit(
                 "chat",
                 {"type": "history", "items": history_items, "ts": now_ts},
-                to=sid,
+                to=room,
                 namespace=NAMESPACE,
             )
         else:
@@ -156,7 +151,7 @@ def register_chat_bot_socketio_events(socketio):
                     "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
                     "ts": now_ts2,
                 },
-                to=sid,
+                to=room,
                 namespace=NAMESPACE,
             )
             _ROOM_HAS_SYSTEM.add(room)
@@ -180,6 +175,7 @@ def register_chat_bot_socketio_events(socketio):
             _SID_ROOM[sid] = room
 
         text = (data or {}).get("text", "").strip()
+        file = (data or {}).get("file")
         if not text:
             return
 
@@ -216,7 +212,7 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
-        bot_result = api_gemini.handle_image_prompt(text, image_generator)
+        bot_result = api_gemini.handle_request(text, image_generator)
         bot_text = bot_result.get("content", "")
         is_image = bot_result.get("is_image", False)
 
@@ -292,6 +288,6 @@ def register_chat_bot_socketio_events(socketio):
             emit(
                 "rooms_updated",
                 {"rooms": room_items},
-                to=sid,
+                to=room,
                 namespace=NAMESPACE,
             )

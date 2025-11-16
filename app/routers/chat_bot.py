@@ -10,10 +10,12 @@ chat_bot_controller = ChatBotController()
 @jwt_required()
 async def user_login():
     user = request.user
-    data = request.json
-    message = data.get("message", "")
-    room_id = data.get("room_id", None)
-    return await chat_bot_controller.create_message(user, message, room_id)
+    form = request.form
+    files = request.files
+    text = form.get("text", "")
+    room = form.get("room", "")
+    docs = files.get("file", None)
+    return await chat_bot_controller.create_message(user, text, room, docs)
 
 
 @chat_bot_router.get("/messages")

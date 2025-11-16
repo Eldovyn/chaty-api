@@ -1,12 +1,12 @@
 import time
 import base64
 import urllib.parse
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List
 from google import genai
 import requests
 from imagekitio import ImageKit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
-from typing import Union, List
+from google.genai import types as genai_types
 from ..config import (
     gemini_api_key,
     imagekit_public_key,
@@ -100,6 +100,9 @@ class GeminiAI:
         title = (response.text or "").strip()
         return title
 
+    # =========================
+    # Helper: jawaban teks biasa
+    # =========================
     def generate_sync(self, message: str) -> str:
         response = self.client.models.generate_content(
             model="gemini-2.5-flash",
@@ -107,6 +110,9 @@ class GeminiAI:
         )
         return (response.text or "").strip()
 
+    # =========================
+    # Klasifikasi: IMAGE vs TEXT
+    # =========================
     def get_prompt_mode(self, prompt: str) -> str:
         instruction = """
         You are a classifier for user requests.
@@ -141,6 +147,9 @@ class GeminiAI:
 
         return "IMAGE" if text.startswith("IMAGE") else "TEXT"
 
+    # =========================
+    # Validasi prompt gambar
+    # =========================
     def is_valid_image_prompt(self, prompt: str) -> bool:
         instruction = """
         You are a classifier for image generation prompts.
@@ -167,11 +176,18 @@ class GeminiAI:
         text = (response.text or "").strip().upper()
         return text.startswith("VALID")
 
+    # =========================
+    # Handler: prompt text -> TEXT / IMAGE
+    # =========================
     def handle_image_prompt(
         self,
         prompt: str,
         image_generator: ImageKitImageGenerator,
     ) -> Dict[str, Any]:
+        """
+        - Kalau user cuma bertanya/teks → jawab teks (is_image=False).
+        - Kalau user minta gambar → validasi prompt → generate via ImageKit.
+        """
         prompt = (prompt or "").strip()
         if not prompt:
             return {
@@ -181,6 +197,7 @@ class GeminiAI:
 
         mode = self.get_prompt_mode(prompt)
 
+        # Hanya bertanya / ingin jawaban teks → langsung generate_sync
         if mode == "TEXT":
             answer = self.generate_sync(prompt)
             return {
@@ -188,6 +205,7 @@ class GeminiAI:
                 "content": answer,
             }
 
+        # User memang minta gambar → validasi deskripsi
         if not self.is_valid_image_prompt(prompt):
             fallback_prompt = f"""
             Pengguna mengirim pesan berikut:
@@ -209,6 +227,7 @@ class GeminiAI:
                 "content": fallback_text,
             }
 
+        # Prompt valid → generate image ke ImageKit
         image_url = image_generator.generate_image(prompt)
 
         if image_url:
@@ -217,6 +236,7 @@ class GeminiAI:
                 "content": image_url,
             }
 
+        # Gagal generate / upload → fallback teks
         fallback_prompt = f"""
         Pengguna mengirim permintaan untuk membuat gambar dengan prompt:
 
@@ -237,3 +257,113 @@ class GeminiAI:
             "is_image": False,
             "content": fallback_text,
         }
+
+    # =========================
+    # Handler: analisis dokumen (PDF/CSV/Word)
+    # =========================
+    def analyze_document(
+        self,
+        file_input: Union[str, bytes],  # path string ATAU bytes
+        filename: str,
+        mime_type: str,
+        instruction: str = "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya dalam bahasa Indonesia.",
+    ) -> Dict[str, Any]:
+        """
+        Analisis dokumen (PDF/CSV/Word, dll) dengan Gemini.
+
+        - file_input : path string (mis. './file.pdf') ATAU bytes (mis. file.read()).
+        - filename   : nama file untuk display.
+        - mime_type  : mimetype file (application/pdf, text/csv, application/vnd.openxmlformats-officedocument.wordprocessingml.document, dll).
+        - instruction: instruksi ke Gemini.
+
+        Return:
+        {
+          "is_image": False,
+          "content": "<hasil analisis (teks)>"
+        }
+        """
+
+        # 1. Upload file ke Gemini File API
+        try:
+            uploaded_file = self.client.files.upload(
+                file=file_input,
+                config=genai_types.UploadFileConfig(
+                    display_name=filename,
+                    mime_type=mime_type,
+                ),
+            )
+        except Exception as e:
+            fallback = (
+                "Gagal mengunggah dokumen untuk dianalisis. "
+                "Silakan coba lagi atau unggah file lain. "
+                f"Detail teknis: {e}"
+            )
+            return {
+                "is_image": False,
+                "content": fallback,
+            }
+
+        # 2. Panggil model dengan file + instruction
+        try:
+            response = self.client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    instruction,  # instruksi teks
+                    uploaded_file,  # referensi file
+                ],
+            )
+            text = (response.text or "").strip()
+        except Exception as e:
+            text = (
+                "Saat ini aku belum bisa menganalisis dokumen tersebut. "
+                "Silakan coba lagi nanti. "
+                f"Detail teknis: {e}"
+            )
+
+        return {
+            "is_image": False,
+            "content": text,
+        }
+
+    # =========================
+    # ENTRY POINT UTAMA
+    # =========================
+    def handle_request(
+        self,
+        prompt: Optional[str],
+        image_generator: ImageKitImageGenerator,
+        file_input: Union[None, str, bytes] = None,
+        filename: Optional[str] = None,
+        mime_type: Optional[str] = None,
+        instruction_for_doc: str = "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya dalam bahasa Indonesia.",
+    ) -> Dict[str, Any]:
+        """
+        Satu pintu:
+        - Kalau ada file_input  -> analisis dokumen
+        - Kalau tidak ada file  -> handle_image_prompt (Q&A / generate image)
+
+        Return shape:
+        {
+          "is_image": bool,
+          "content": "<teks atau url gambar>"
+        }
+        """
+
+        # CASE 1: ada dokumen yang mau dianalisis
+        if file_input is not None and filename and mime_type:
+            return self.analyze_document(
+                file_input=file_input,
+                filename=filename,
+                mime_type=mime_type,
+                instruction=instruction_for_doc,
+            )
+
+        # CASE 2: tidak ada file → gunakan alur prompt biasa
+        prompt = (prompt or "").strip()
+        if not prompt:
+            return {
+                "is_image": False,
+                "content": "Tolong tuliskan pertanyaan, perintah, atau unggah dokumen yang ingin dianalisis.",
+            }
+
+        return self.handle_image_prompt(prompt, image_generator)

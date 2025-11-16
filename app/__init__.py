@@ -20,6 +20,12 @@ def create_app(test_config=None):
     except OSError:
         pass
 
+    global _HISTORY, _ROOM_HAS_SYSTEM, _SID_ROOM, _SID_USER
+    _HISTORY = []
+    _ROOM_HAS_SYSTEM = set()
+    _SID_ROOM = {}
+    _SID_USER = {}
+
     global celery_app
     celery_app = celery_init_app(app)
 
@@ -27,6 +33,7 @@ def create_app(test_config=None):
 
     register_tasks(celery_app)
 
+    global socket_io
     from .extensions import db, mail, bcrypt, limiter, init_cloudinary, socket_io
 
     bcrypt.init_app(app)
