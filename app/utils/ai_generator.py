@@ -6,7 +6,6 @@ from google import genai
 import requests
 from imagekitio import ImageKit
 from imagekitio.models.UploadFileRequestOptions import UploadFileRequestOptions
-from google.genai import types as genai_types
 from ..config import (
     gemini_api_key,
     imagekit_public_key,
@@ -264,16 +263,15 @@ class GeminiAI:
     def analyze_document(
         self,
         file_input: Union[str, bytes],  # path string ATAU bytes
-        filename: str,
-        mime_type: str,
-        instruction: str = "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya dalam bahasa Indonesia.",
+        instruction: str = (
+            "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya "
+            "dalam bahasa Indonesia."
+        ),
     ) -> Dict[str, Any]:
         """
         Analisis dokumen (PDF/CSV/Word, dll) dengan Gemini.
 
         - file_input : path string (mis. './file.pdf') ATAU bytes (mis. file.read()).
-        - filename   : nama file untuk display.
-        - mime_type  : mimetype file (application/pdf, text/csv, application/vnd.openxmlformats-officedocument.wordprocessingml.document, dll).
         - instruction: instruksi ke Gemini.
 
         Return:
@@ -283,14 +281,10 @@ class GeminiAI:
         }
         """
 
-        # 1. Upload file ke Gemini File API
+        # 1. Upload file ke Gemini File API (tanpa config khusus)
         try:
             uploaded_file = self.client.files.upload(
                 file=file_input,
-                config=genai_types.UploadFileConfig(
-                    display_name=filename,
-                    mime_type=mime_type,
-                ),
             )
         except Exception as e:
             fallback = (
@@ -308,8 +302,8 @@ class GeminiAI:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=[
-                    instruction,  # instruksi teks
-                    uploaded_file,  # referensi file
+                    instruction,
+                    uploaded_file,
                 ],
             )
             text = (response.text or "").strip()
@@ -333,37 +327,44 @@ class GeminiAI:
         prompt: Optional[str],
         image_generator: ImageKitImageGenerator,
         file_input: Union[None, str, bytes] = None,
-        filename: Optional[str] = None,
-        mime_type: Optional[str] = None,
-        instruction_for_doc: str = "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya dalam bahasa Indonesia.",
+        instruction_for_doc: str = (
+            "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya "
+            "dalam bahasa Indonesia."
+        ),
     ) -> Dict[str, Any]:
         """
-        Satu pintu:
-        - Kalau ada file_input  -> analisis dokumen
-        - Kalau tidak ada file  -> handle_image_prompt (Q&A / generate image)
-
-        Return shape:
-        {
-          "is_image": bool,
-          "content": "<teks atau url gambar>"
-        }
+        Prioritas:
+        1. Kalau prompt minta gambar (IMAGE) -> SELALU generate gambar, abaikan file_input.
+        2. Kalau tidak minta gambar & ada file_input -> analisis dokumen.
+        3. Kalau hanya prompt teks -> jawaban teks biasa (handle_image_prompt akan
+           bedakan sendiri antara TEXT/IMAGE).
+        4. Kalau tidak ada prompt dan tidak ada file -> minta user input sesuatu.
         """
 
-        # CASE 1: ada dokumen yang mau dianalisis
-        if file_input is not None and filename and mime_type:
+        prompt = (prompt or "").strip()
+
+        # CASE 0: Prompt ada dan diklasifikasikan sebagai IMAGE → abaikan file, langsung generate gambar
+        if prompt:
+            mode = self.get_prompt_mode(prompt)
+            if mode == "IMAGE":
+                return self.handle_image_prompt(prompt, image_generator)
+
+        # CASE 1: Tidak minta IMAGE, tapi ada dokumen → analisis dokumen
+        if file_input is not None:
             return self.analyze_document(
                 file_input=file_input,
-                filename=filename,
-                mime_type=mime_type,
                 instruction=instruction_for_doc,
             )
 
-        # CASE 2: tidak ada file → gunakan alur prompt biasa
-        prompt = (prompt or "").strip()
-        if not prompt:
-            return {
-                "is_image": False,
-                "content": "Tolong tuliskan pertanyaan, perintah, atau unggah dokumen yang ingin dianalisis.",
-            }
+        # CASE 2: Hanya prompt teks (tanpa file) → alur normal via handle_image_prompt
+        if prompt:
+            return self.handle_image_prompt(prompt, image_generator)
 
-        return self.handle_image_prompt(prompt, image_generator)
+        # CASE 3: Tidak ada apa-apa
+        return {
+            "is_image": False,
+            "content": (
+                "Tolong tuliskan pertanyaan, perintah, atau unggah dokumen "
+                "yang ingin dianalisis."
+            ),
+        }
