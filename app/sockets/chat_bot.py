@@ -257,9 +257,7 @@ def register_chat_bot_socketio_events(socketio):
 
             # >>> EMIT LIST ROOM CHAT TERBARU <<<
             # ambil semua room milik user, misalnya diurutkan dari updated_at terbaru
-            latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None).order_by(
-                "-updated_at"
-            )
+            latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
 
             room_items = []
             for r in latest_rooms:
