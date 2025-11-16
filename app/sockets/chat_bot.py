@@ -287,4 +287,3 @@ def register_chat_bot_socketio_events(socketio):
                 to=sid,
                 namespace=NAMESPACE,
             )
-            # <<< END EMIT LIST ROOM CHAT TERBARU <<<
