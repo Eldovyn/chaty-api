@@ -16,6 +16,9 @@ def register_chat_bot_socketio_events(socketio):
     image_generator = ImageKitImageGenerator()
     room_chat_serializer = RoomChatSerializer()
 
+    # ==============================================
+    # CONNECT
+    # ==============================================
     @socketio.on("connect", namespace=NAMESPACE)
     def handle_connect(auth=None):
         sid = request.sid
@@ -43,6 +46,7 @@ def register_chat_bot_socketio_events(socketio):
             disconnect(sid=sid)
             return
 
+        # Token timestamp check
         iat = payload.get("iat")
         issued_time = datetime.datetime.fromtimestamp(iat, tz=datetime.timezone.utc)
         ua = getattr(user, "updated_at", None)
@@ -54,6 +58,7 @@ def register_chat_bot_socketio_events(socketio):
             disconnect(sid=sid)
             return
 
+        # Blacklist check
         jti = payload.get("jti")
         if jti and BlacklistTokenModel.objects(jti=jti).first():
             disconnect(sid=sid)
@@ -63,8 +68,10 @@ def register_chat_bot_socketio_events(socketio):
             disconnect(sid=sid)
             return
 
+        # Mapping SID ke User
         _SID_USER[sid] = user
 
+        # Tentukan room
         if not room:
             room = f"room-{uuid.uuid4().hex}"
 
@@ -90,8 +97,10 @@ def register_chat_bot_socketio_events(socketio):
 
         user_room = ChatRoomModel.objects(room=room, user=user).first()
 
+        # ===============================
+        # LOAD HISTORY (MODEL BARU)
+        # ===============================
         history_items = []
-
         if user_room is not None:
             user_chat_histories = (
                 ChatHistoryModel.objects(room=user_room, user=user)
@@ -112,18 +121,8 @@ def register_chat_bot_socketio_events(socketio):
                 history_items.append(
                     {
                         "room": room,
-                        "role": "user",
-                        "text": ch.original_message,
-                        "ts": ts_iso,
-                        "is_image": False,
-                    }
-                )
-
-                history_items.append(
-                    {
-                        "room": room,
-                        "role": "assistant",
-                        "text": ch.response_message,
+                        "role": ch.role,
+                        "text": ch.text,
                         "ts": ts_iso,
                         "is_image": getattr(ch, "is_image", False),
                     }
@@ -156,6 +155,9 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.add(room)
 
+    # ==============================================
+    # DISCONNECT
+    # ==============================================
     @socketio.on("disconnect", namespace=NAMESPACE)
     def handle_disconnect():
         sid = request.sid
@@ -163,24 +165,27 @@ def register_chat_bot_socketio_events(socketio):
         _SID_USER.pop(sid, None)
         print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
 
+    # ==============================================
+    # CHAT MESSAGE
+    # ==============================================
     @socketio.on("chat", namespace=NAMESPACE)
     def handle_chat(data):
         sid = request.sid
 
         payload_room = (data or {}).get("room")
-
         room = (payload_room or _SID_ROOM.get(sid) or "").strip()
         if not room:
             room = f"room-{uuid.uuid4().hex}"
             _SID_ROOM[sid] = room
 
         text = (data or {}).get("text", "").strip()
-        file = (data or {}).get("file")
+        file = (data or {}).get("file")  # Not used yet
         if not text:
             return
 
         join_room(room, sid=sid, namespace=NAMESPACE)
 
+        # Clear system text if existed
         if room in _ROOM_HAS_SYSTEM:
             now_ts_clear = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -195,11 +200,15 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
 
+        # ===============================
+        # Broadcast USER message
+        # ===============================
         now_ts_user = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
             .replace("+00:00", "Z")
         )
+
         user_message = {
             "type": "user",
             "text": text,
@@ -212,6 +221,9 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
+        # ===============================
+        # AI RESPONSE
+        # ===============================
         bot_result = api_gemini.handle_request(text, image_generator)
         bot_text = bot_result.get("content", "")
         is_image = bot_result.get("is_image", False)
@@ -242,8 +254,10 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
+        # ===============================
+        # SAVE TO DATABASE (MODEL BARU)
+        # ===============================
         user = _SID_USER.get(sid)
-
         if user is not None:
             user_room = ChatRoomModel.objects(room=room, user=user).first()
 
@@ -251,16 +265,29 @@ def register_chat_bot_socketio_events(socketio):
                 user_room = ChatRoomModel(room=room, user=user)
                 user_room.save()
 
+            # Save USER message
             ChatHistoryModel(
-                original_message=text,
-                response_message=bot_text,
+                text=text,
+                role="user",
+                user=user,
+                room=user_room,
+                is_image=False,
                 links=[],
+            ).save()
+
+            # Save ASSISTANT message
+            ChatHistoryModel(
+                text=bot_text,
                 role="assistant",
                 user=user,
                 room=user_room,
                 is_image=is_image,
+                links=[],
             ).save()
 
+            # ===============================
+            # GENERATE TITLE (MODEL BARU)
+            # ===============================
             histories = (
                 ChatHistoryModel.objects(room=user_room, user=user)
                 .order_by("id")
@@ -269,20 +296,22 @@ def register_chat_bot_socketio_events(socketio):
 
             context_list = []
             for h in histories:
-                context_list.append(f"user: {h.original_message}")
-                context_list.append(f"assistant: {h.response_message}")
+                context_list.append(f"{h.role}: {h.text}")
 
             if context_list:
                 title_room = api_gemini.generate_title_from_context(context_list)
                 user_room.title = title_room
                 user_room.save()
 
+            # ===============================
+            # UPDATE ROOM LIST
+            # ===============================
             latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
 
             room_items = []
             for r in latest_rooms:
-                result = room_chat_serializer.serialize(r)
-                room_items.append(result)
+                room_items.append(room_chat_serializer.serialize(r))
+
             room_items.reverse()
 
             emit(
