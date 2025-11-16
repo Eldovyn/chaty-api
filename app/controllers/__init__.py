@@ -6,3 +6,4 @@ from .profile import *
 from .otp_email import *
 from .account_active import *
 from .chat_bot import *
+from .chat_room import *

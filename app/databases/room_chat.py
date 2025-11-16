@@ -37,7 +37,9 @@ class RoomChatDatabase(Database):
         user_id = kwargs.get("user_id")
         if category == "get_all_rooms_by_user_id":
             if user_data := UserModel.objects(id=user_id).first():
-                if user_rooms := ChatRoomModel.objects(user=user_data).all():
+                if user_rooms := ChatRoomModel.objects(user=user_data).order_by(
+                    "-created_at"
+                ):
                     return user_rooms
 
     @staticmethod
@@ -53,7 +55,12 @@ class RoomChatDatabase(Database):
 
     @staticmethod
     async def delete(category, **kwargs):
-        pass
+        user_id = kwargs.get("user_id")
+        if category == "delete_all_rooms_by_user_id":
+            if user_data := UserModel.objects(id=user_id).first():
+                if user_rooms := ChatRoomModel.objects(user=user_data):
+                    user_rooms.delete()
+                    return user_rooms
 
     @staticmethod
     async def update(category, **kwargs):

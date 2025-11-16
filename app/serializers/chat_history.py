@@ -10,6 +10,7 @@ class ChatHistorySerializer(SerializerInterface):
         original_message_is_null: bool = False,
         response_message_is_null: bool = False,
         links_is_null: bool = False,
+        is_image_is_null: bool = False,
         created_at_is_null: bool = False,
         updated_at_is_null: bool = False,
         deleted_at_is_null: bool = False,
@@ -21,6 +22,8 @@ class ChatHistorySerializer(SerializerInterface):
             data["original_message"] = user.original_message
         if not response_message_is_null:
             data["response_message"] = user.response_message
+        if not is_image_is_null:
+            data["is_image"] = user.is_image
         if not links_is_null:
             data["links"] = user.links
         if not created_at_is_null:

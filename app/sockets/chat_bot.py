@@ -1,8 +1,11 @@
-from flask_socketio import emit, join_room
+from flask_socketio import emit, join_room, disconnect
 from flask import request
 import uuid
 import datetime
-from ..utils import GeminiAI
+from ..utils import GeminiAI, AuthJwt, ImageKitImageGenerator
+from ..models import UserModel, BlacklistTokenModel, ChatHistoryModel, ChatRoomModel
+from ..serializers import RoomChatSerializer
+from .. import _HISTORY, _ROOM_HAS_SYSTEM, _SID_ROOM, _SID_USER
 
 
 def register_chat_bot_socketio_events(socketio):
@@ -10,30 +13,60 @@ def register_chat_bot_socketio_events(socketio):
     HISTORY_CAP = 2000
 
     api_gemini = GeminiAI()
-
-    _HISTORY = []
-    _ROOM_HAS_SYSTEM = set()
-    _SID_ROOM = {}
+    image_generator = ImageKitImageGenerator()
+    room_chat_serializer = RoomChatSerializer()
 
     @socketio.on("connect", namespace=NAMESPACE)
     def handle_connect(auth=None):
         sid = request.sid
 
-        # === inline _resolve_room_from_auth_or_args ===
-        room = None
+        auth_data = auth if isinstance(auth, dict) else {}
+        token = auth_data.get("token")
+        room = auth_data.get("room")
 
-        if isinstance(auth, dict):
-            room = (auth.get("room") or "").strip()
+        if not token:
+            disconnect(sid=sid)
+            return
+
+        payload = AuthJwt.verify_token_sync(token)
+        if payload is None:
+            disconnect(sid=sid)
+            return
+
+        user_id = payload.get("sub")
+        if not user_id:
+            disconnect(sid=sid)
+            return
+
+        user = UserModel.objects(id=user_id).first()
+        if not user:
+            disconnect(sid=sid)
+            return
+
+        iat = payload.get("iat")
+        issued_time = datetime.datetime.fromtimestamp(iat, tz=datetime.timezone.utc)
+        ua = getattr(user, "updated_at", None)
+        if ua is not None and ua.tzinfo is None:
+            ua = ua.replace(tzinfo=datetime.timezone.utc)
+
+        SKEW = datetime.timedelta(seconds=60)
+        if ua and (issued_time + SKEW) < ua:
+            disconnect(sid=sid)
+            return
+
+        jti = payload.get("jti")
+        if jti and BlacklistTokenModel.objects(jti=jti).first():
+            disconnect(sid=sid)
+            return
+
+        if not user.is_active:
+            disconnect(sid=sid)
+            return
+
+        _SID_USER[sid] = user
 
         if not room:
-            room = (
-                request.args.get("room") or request.args.get("room_id") or ""
-            ).strip()
-
-        if not room:
-            # inline _generate_new_room_id
             room = f"room-{uuid.uuid4().hex}"
-        # === end inline _resolve_room_from_auth_or_args ===
 
         join_room(room, sid=sid, namespace=NAMESPACE)
         _SID_ROOM[sid] = room
@@ -42,7 +75,6 @@ def register_chat_bot_socketio_events(socketio):
             f"[connect] ns={NAMESPACE} sid={sid} room={room} ip={request.remote_addr}"
         )
 
-        # inline _now_iso
         now_ts = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -52,23 +84,62 @@ def register_chat_bot_socketio_events(socketio):
         emit(
             "room_created",
             {"room": room, "ts": now_ts},
-            to=sid,
+
+            to=room,
             namespace=NAMESPACE,
         )
 
-        # === inline _send_initial_message_or_history ===
-        # inline _get_history_for_room(room)
-        items = [m for m in _HISTORY if m["room"] == room and m.get("role") != "system"]
-        history = items[-200:]
+        user_room = ChatRoomModel.objects(room=room, user=user).first()
 
-        if history:
+        history_items = []
+
+        if user_room is not None:
+            user_chat_histories = (
+                ChatHistoryModel.objects(room=user_room, user=user)
+                .order_by("id")
+                .limit(200)
+            )
+
+            for ch in user_chat_histories:
+                try:
+                    created_at = ch.id.generation_time.replace(
+                        tzinfo=datetime.timezone.utc
+                    )
+                except Exception:
+                    created_at = datetime.datetime.now(datetime.timezone.utc)
+
+                ts_iso = created_at.isoformat().replace("+00:00", "Z")
+
+                history_items.append(
+                    {
+                        "room": room,
+                        "role": "user",
+                        "text": ch.original_message,
+                        "ts": ts_iso,
+                        "is_image": False,
+                    }
+                )
+
+                history_items.append(
+                    {
+                        "room": room,
+                        "role": "assistant",
+                        "text": ch.response_message,
+                        "ts": ts_iso,
+                        "is_image": getattr(ch, "is_image", False),
+                    }
+                )
+
+            history_items = history_items[-200:]
+
+        if history_items:
             emit(
                 "chat",
-                {"type": "history", "items": history, "ts": now_ts},
-                to=sid,
+                {"type": "history", "items": history_items, "ts": now_ts},
+                to=room,
+
                 namespace=NAMESPACE,
             )
-            _ROOM_HAS_SYSTEM.discard(room)
         else:
             now_ts2 = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -82,16 +153,18 @@ def register_chat_bot_socketio_events(socketio):
                     "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
                     "ts": now_ts2,
                 },
-                to=sid,
+
+                to=room,
                 namespace=NAMESPACE,
             )
             _ROOM_HAS_SYSTEM.add(room)
-        # === end inline _send_initial_message_or_history ===
+
 
     @socketio.on("disconnect", namespace=NAMESPACE)
     def handle_disconnect():
         sid = request.sid
         _SID_ROOM.pop(sid, None)
+        _SID_USER.pop(sid, None)
         print(f"[disconnect] ns={NAMESPACE} sid={sid} ip={request.remote_addr}")
 
     @socketio.on("chat", namespace=NAMESPACE)
@@ -100,20 +173,20 @@ def register_chat_bot_socketio_events(socketio):
 
         payload_room = (data or {}).get("room")
 
-        # === inline _ensure_room_for_sid ===
         room = (payload_room or _SID_ROOM.get(sid) or "").strip()
         if not room:
-            room = f"room-{uuid.uuid4().hex}"  # inline _generate_new_room_id
+            room = f"room-{uuid.uuid4().hex}"
             _SID_ROOM[sid] = room
-        # === end inline _ensure_room_for_sid ===
+
 
         text = (data or {}).get("text", "").strip()
+        file = (data or {}).get("file")
         if not text:
             return
 
         join_room(room, sid=sid, namespace=NAMESPACE)
 
-        # === inline _clear_system_message_if_needed ===
+
         if room in _ROOM_HAS_SYSTEM:
             now_ts_clear = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -127,9 +200,7 @@ def register_chat_bot_socketio_events(socketio):
                 namespace=NAMESPACE,
             )
             _ROOM_HAS_SYSTEM.discard(room)
-        # === end inline _clear_system_message_if_needed ===
 
-        # === inline _send_user_message + _append_message ===
         now_ts_user = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -143,16 +214,14 @@ def register_chat_bot_socketio_events(socketio):
         }
         emit("chat", user_message, to=room, namespace=NAMESPACE)
 
-        # _append_message(room, "user", text)
         _HISTORY.append({"room": room, "role": "user", "text": text, "ts": now_ts_user})
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
-        # === end inline _send_user_message + _append_message ===
 
-        # panggil LLM
-        bot_response = api_gemini.generate_sync(text)
+        bot_result = api_gemini.handle_request(text, image_generator)
+        bot_text = bot_result.get("content", "")
+        is_image = bot_result.get("is_image", False)
 
-        # === inline _send_assistant_message + _append_message ===
         now_ts_assistant = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -160,9 +229,10 @@ def register_chat_bot_socketio_events(socketio):
         )
         assistant_message = {
             "type": "assistant",
-            "text": bot_response,
+            "text": bot_text,
             "ts": now_ts_assistant,
             "room": room,
+            "is_image": is_image,
         }
         emit("chat", assistant_message, to=room, namespace=NAMESPACE)
 
@@ -170,10 +240,61 @@ def register_chat_bot_socketio_events(socketio):
             {
                 "room": room,
                 "role": "assistant",
-                "text": bot_response,
+                "text": bot_text,
                 "ts": now_ts_assistant,
+                "is_image": is_image,
             }
         )
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
-        # === end inline _send_assistant_message + _append_message ===
+
+        user = _SID_USER.get(sid)
+
+        if user is not None:
+            user_room = ChatRoomModel.objects(room=room, user=user).first()
+
+            if not user_room:
+                user_room = ChatRoomModel(room=room, user=user)
+                user_room.save()
+
+            ChatHistoryModel(
+                original_message=text,
+                response_message=bot_text,
+                links=[],
+                role="assistant",
+                user=user,
+                room=user_room,
+                is_image=is_image,
+            ).save()
+
+            histories = (
+                ChatHistoryModel.objects(room=user_room, user=user)
+                .order_by("id")
+                .limit(10)
+            )
+
+            context_list = []
+            for h in histories:
+                context_list.append(f"user: {h.original_message}")
+                context_list.append(f"assistant: {h.response_message}")
+
+            if context_list:
+                title_room = api_gemini.generate_title_from_context(context_list)
+                user_room.title = title_room
+                user_room.save()
+
+            latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
+
+            room_items = []
+            for r in latest_rooms:
+                result = room_chat_serializer.serialize(r)
+                room_items.append(result)
+            room_items.reverse()
+
+            emit(
+                "rooms_updated",
+                {"rooms": room_items},
+                to=room,
+                namespace=NAMESPACE,
+            )
+

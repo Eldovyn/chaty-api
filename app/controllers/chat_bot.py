@@ -1,12 +1,15 @@
 from ..databases import ChatHistoryDatabase, RoomChatDatabase
 from flask import jsonify
+from werkzeug.utils import secure_filename
 from ..utils import (
     Validation,
     GeminiAI,
 )
 import uuid
+from .. import socket_io
 from ..serializers import ChatHistorySerializer, RoomChatSerializer
 import google.genai.errors
+import os
 
 
 class ChatBotController:
@@ -38,30 +41,17 @@ class ChatBotController:
         ):
             return jsonify({"message": "chat history not found"}), 404
 
-    async def create_message(self, user, original_message, room_id=None):
+    async def create_message(self, user, text, room, docs):
         errors = {}
-        await Validation.validate_required_text_async(
-            errors, "original_message", original_message
-        )
+        await Validation.validate_required_text_async(errors, "text", text)
+        await Validation.validate_required_text_async(errors, "room", room)
+        if not docs:
+            errors["file"] = "IS_REQUIRED"
+        else:
+            docs = docs[0]
+            _, ext = os.path.splitext(docs.filename)
+            ext = ext.lower()
+            if ext not in (".pdf", ".docx", ".txt"):
+                errors["file"] = "IS_INVALID"
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
-        try:
-            chat_gemini = await self.gemini.generate_async(original_message)
-        except google.genai.errors.ServerError:
-            return jsonify({"message": "service unavailable"}), 503
-        if not room_id:
-            user_chat = await ChatHistoryDatabase.insert(
-                f"{user.id}", original_message, chat_gemini
-            )
-        else:
-            user_chat = await ChatHistoryDatabase.insert(
-                f"{user.id}",
-                original_message,
-                chat_gemini,
-                room_id=room_id,
-            )
-        user_chat_serialize = self.chat_history_serializer.serialize(user_chat)
-        return (
-            jsonify({"message": "success create message", "data": user_chat_serialize}),
-            201,
-        )

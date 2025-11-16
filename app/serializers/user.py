@@ -9,6 +9,7 @@ class UserSerializer(SerializerInterface):
         id_is_null: bool = False,
         email_is_null: bool = False,
         avatar_is_null: bool = False,
+        username_is_null: bool = False,
         created_at_is_null: bool = False,
         updated_at_is_null: bool = False,
         is_active_is_null: bool = False,
@@ -20,6 +21,8 @@ class UserSerializer(SerializerInterface):
             data["id"] = str(user.id) if user.id else None
         if not email_is_null:
             data["email"] = user.email
+        if not username_is_null:
+            data["username"] = user.username
         if not avatar_is_null:
             data["avatar"] = user.avatar
         if not created_at_is_null:
