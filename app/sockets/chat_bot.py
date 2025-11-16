@@ -2,6 +2,7 @@ from flask_socketio import emit, join_room, disconnect
 from flask import request
 import uuid
 import datetime
+
 from ..utils import GeminiAI, AuthJwt
 from ..models import UserModel, BlacklistTokenModel, ChatHistoryModel, ChatRoomModel
 
@@ -89,7 +90,7 @@ def register_chat_bot_socketio_events(socketio):
             namespace=NAMESPACE,
         )
 
-        user_room = ChatRoomModel.objects(title=room, user=user).first()
+        user_room = ChatRoomModel.objects(room=room, user=user).first()
 
         history_items = []
 
@@ -176,8 +177,10 @@ def register_chat_bot_socketio_events(socketio):
         if not text:
             return
 
+        # pastikan user join ke room
         join_room(room, sid=sid, namespace=NAMESPACE)
 
+        # kalau ada system message "Belum ada pesan...", hapus
         if room in _ROOM_HAS_SYSTEM:
             now_ts_clear = (
                 datetime.datetime.now(datetime.timezone.utc)
@@ -192,6 +195,7 @@ def register_chat_bot_socketio_events(socketio):
             )
             _ROOM_HAS_SYSTEM.discard(room)
 
+        # ====== kirim pesan user ke client ======
         now_ts_user = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -209,10 +213,9 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
-        # panggil LLM
+        # ====== panggil LLM untuk jawaban ======
         bot_response = api_gemini.generate_sync(text)
 
-        # === kirim pesan assistant + simpan di in-memory history ===
         now_ts_assistant = (
             datetime.datetime.now(datetime.timezone.utc)
             .isoformat()
@@ -237,15 +240,18 @@ def register_chat_bot_socketio_events(socketio):
         if len(_HISTORY) > HISTORY_CAP:
             del _HISTORY[: len(_HISTORY) - HISTORY_CAP]
 
-        # ====== simpan ke DB (ChatHistoryModel) ======
+        # ====== simpan ke DB + generate title dari HISTORY ======
         user = _SID_USER.get(sid)
 
         if user is not None:
-            user_room = ChatRoomModel.objects(title=room, user=user).first()
+            # cari / buat room untuk user ini
+            user_room = ChatRoomModel.objects(room=room, user=user).first()
+
             if not user_room:
-                user_room = ChatRoomModel(title=room, user=user)
+                user_room = ChatRoomModel(room=room, user=user)
                 user_room.save()
 
+            # simpan history terkini
             ChatHistoryModel(
                 original_message=text,
                 response_message=bot_response,
@@ -255,8 +261,29 @@ def register_chat_bot_socketio_events(socketio):
                 room=user_room,
             ).save()
 
+            # ambil beberapa history terakhir dari DB untuk room ini
+            histories = (
+                ChatHistoryModel.objects(room=user_room, user=user)
+                .order_by("id")
+                .limit(10)  # misalnya 10 interaksi terakhir
+            )
+
+            context_list = []
+            for h in histories:
+                context_list.append(f"user: {h.original_message}")
+                context_list.append(f"assistant: {h.response_message}")
+
+            # kalau mau, tambahkan juga pesan terbaru (opsional karena sudah ada di histories)
+            # context_list.append(f"user: {text}")
+            # context_list.append(f"assistant: {bot_response}")
+
+            # generate judul berdasarkan history room
+            if context_list:
+                title_room = api_gemini.generate_title_from_context(context_list)
+                user_room.title = title_room
+                user_room.save()
+
             # >>> EMIT LIST ROOM CHAT TERBARU <<<
-            # ambil semua room milik user, misalnya diurutkan dari updated_at terbaru
             latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
 
             room_items = []
@@ -277,8 +304,8 @@ def register_chat_bot_socketio_events(socketio):
                         ),
                     }
                 )
+            room_items.reverse()
 
-            # kirim ke client (hanya ke user/sid ini)
             emit(
                 "rooms_updated",
                 {"rooms": room_items},

@@ -117,9 +117,7 @@ class ProfileController:
         )
 
     async def current_user(self, user):
-        print("user:", user.username)
         current_user = self.user_seliazer.serialize(user)
-        print("current_user:", current_user)
 
         etag = generate_etag(current_user)
 
