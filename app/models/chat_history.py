@@ -5,8 +5,7 @@ from .base import BaseDocument
 
 
 class ChatHistoryModel(BaseDocument):
-    original_message = me.StringField(required=True)
-    response_message = me.StringField(required=True)
+    text = me.StringField(required=True)
     links = me.ListField(me.StringField())
     role = me.StringField(required=True)
     is_image = me.BooleanField(required=False, default=False)
