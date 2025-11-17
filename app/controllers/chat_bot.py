@@ -56,7 +56,6 @@ class ChatBotController:
         errors = {}
         await Validation.validate_required_text_async(errors, "text", text)
         if docs:
-            docs = docs[0]
             _, ext = os.path.splitext(docs.filename)
             ext = ext.lower()
             if ext not in (".pdf", ".docx", ".txt"):
