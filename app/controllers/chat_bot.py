@@ -11,6 +11,7 @@ import datetime
 from ..models import ChatRoomModel, ChatHistoryModel
 import uuid
 from .. import socket_io
+import tempfile
 
 
 def now_ts():
@@ -64,7 +65,6 @@ class ChatBotController:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
         if not room:
             room = f"room-{uuid.uuid4().hex}"
-
         user_room = ChatRoomModel.objects(room=room, user=user).first()
         if not user_room:
             user_room = ChatRoomModel(room=room, user=user)
@@ -80,7 +80,20 @@ class ChatBotController:
             links=[],
         ).save()
 
-        bot_result = self.gemini.handle_request(text, self.image_generator)
+        file_bytes: bytes | None = None
+        if docs is not None:
+            file_bytes = docs.read()
+            docs.seek(0)
+
+        file_path = None
+        if file_bytes:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(file_bytes)
+                tmp.flush()
+                file_path = tmp.name
+        bot_result = self.gemini.handle_request(
+            text, self.image_generator, file_input=file_path
+        )
         bot_text = bot_result.get("content", "")
         is_image = bot_result.get("is_image", False)
 

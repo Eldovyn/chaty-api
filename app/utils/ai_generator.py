@@ -14,6 +14,7 @@ from ..config import (
     default_folder,
 )
 import difflib
+from werkzeug.datastructures import FileStorage
 
 
 class ImageKitImageGenerator:
