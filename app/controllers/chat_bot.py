@@ -1,16 +1,22 @@
 from ..databases import ChatHistoryDatabase, RoomChatDatabase
 from flask import jsonify
-from werkzeug.utils import secure_filename
 from ..utils import (
     Validation,
     GeminiAI,
     ImageKitImageGenerator,
 )
-from .. import socket_io
 from ..serializers import ChatHistorySerializer, RoomChatSerializer
 import os
 import datetime
 from ..models import ChatRoomModel, ChatHistoryModel
+import uuid
+from .. import socket_io
+
+
+def now_ts():
+    return (
+        datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+    )
 
 
 class ChatBotController:
@@ -49,7 +55,6 @@ class ChatBotController:
     async def create_message(self, user, text, room, docs):
         errors = {}
         await Validation.validate_required_text_async(errors, "text", text)
-        await Validation.validate_required_text_async(errors, "room", room)
         if docs:
             docs = docs[0]
             _, ext = os.path.splitext(docs.filename)
@@ -58,58 +63,107 @@ class ChatBotController:
                 errors["file"] = "IS_INVALID"
         if errors:
             return jsonify({"errors": errors, "message": "validation errors"}), 400
-        now_ts = (
-            datetime.datetime.now(datetime.timezone.utc)
-            .isoformat()
-            .replace("+00:00", "Z")
-        )
+        if not room:
+            room = f"room-{uuid.uuid4().hex}"
 
-        user_message = {
-            "type": "user",
-            "text": text,
-            "ts": now_ts,
-            "room": room,
-        }
-        bot_result = self.gemini.handle_request(text, self.image_generator)
-        bot_text = bot_result.get("content", "")
-        is_image = bot_result.get("is_image", False)
         user_room = ChatRoomModel.objects(room=room, user=user).first()
         if not user_room:
             user_room = ChatRoomModel(room=room, user=user)
             user_room.save()
-        room_items = ChatRoomModel.objects(user=user).order_by("-updated_at")
-        result = []
-        for r in room_items:
-            _result = self.room_chat_serializer.serialize(r)
-            result.append(_result)
 
+        ts_user = now_ts()
         ChatHistoryModel(
-            original_message=text,
-            response_message=bot_text,
-            links=[],
+            text=text,
             role="user",
             user=user,
             room=user_room,
-            is_image=is_image,
+            is_image=False,
+            links=[],
         ).save()
 
-        history_items = (
-            ChatHistoryModel.objects(room=user_room, user=user)
-            .all()
-            .order_by("-created_at")[:50]
-        )
+        bot_result = self.gemini.handle_request(text, self.image_generator)
+        bot_text = bot_result.get("content", "")
+        is_image = bot_result.get("is_image", False)
 
+        ts_assistant = now_ts()
+
+        ChatHistoryModel(
+            text=bot_text,
+            role="assistant",
+            user=user,
+            room=user_room,
+            is_image=is_image,
+            links=[],
+        ).save()
+
+        histories = (
+            ChatHistoryModel.objects(room=user_room, user=user).order_by("id").limit(10)
+        )
+        context_list = [f"{h.role}: {h.text}" for h in histories]
+
+        if context_list:
+            title_room = self.gemini.generate_title_from_context(context_list)
+            user_room.title = title_room
+            user_room.save()
+
+        latest_rooms = ChatRoomModel.objects(user=user, deleted_at=None)
+
+        room_items = [self.room_chat_serializer.serialize(r) for r in latest_rooms]
+        room_items.reverse()
         socket_io.emit(
             "chat",
-            {"type": "history", "items": history_items, "ts": now_ts},
+            {"type": "system_clear", "ts": now_ts()},
+            to=room,
+            namespace=self.NAMESPACE,
+        )
+        socket_io.emit(
+            "chat",
+            {
+                "type": "user",
+                "text": text,
+                "ts": ts_user,
+                "is_image": False,
+            },
+            to=room,
+            namespace=self.NAMESPACE,
+        )
+        socket_io.emit(
+            "chat",
+            {
+                "type": "assistant",
+                "text": bot_text,
+                "ts": ts_assistant,
+                "is_image": is_image,
+            },
             to=room,
             namespace=self.NAMESPACE,
         )
         socket_io.emit(
             "rooms_updated",
-            {"rooms": result},
+            {
+                "rooms": room_items,
+            },
             to=room,
             namespace=self.NAMESPACE,
         )
 
-        return jsonify({"status": "ok"}), 201
+        return jsonify(
+            {
+                "message": "success create message",
+                "data": [
+                    {
+                        "type": "user",
+                        "text": text,
+                        "ts": ts_user,
+                        "is_image": False,
+                    },
+                    {
+                        "type": "assistant",
+                        "text": bot_text,
+                        "ts": ts_assistant,
+                        "is_image": is_image,
+                    },
+                ],
+                "rooms_updated": room_items,
+            }
+        )
