@@ -13,6 +13,7 @@ from ..config import (
     imagekit_url_endpoint,
     default_folder,
 )
+import difflib
 
 
 class ImageKitImageGenerator:
@@ -76,7 +77,13 @@ class GeminiAI:
     def __init__(self):
         self.client = genai.Client(api_key=gemini_api_key)
 
-    def generate_title_from_context(self, context: Union[str, List[str]]):
+    def generate_title_from_context(
+        self,
+        context: Union[str, List[str]],
+        existing_titles: Optional[Union[str, List[str]]] = None,
+        similarity_threshold: float = 0.8,
+    ):
+        # gabungkan context
         if isinstance(context, list):
             joined_context = "\n\n".join(str(c) for c in context)
         else:
@@ -96,12 +103,28 @@ class GeminiAI:
             contents=[prompt],
         )
 
-        title = (response.text or "").strip()
-        return title
+        generated_title = (response.text or "").strip()
 
-    # =========================
-    # Helper: jawaban teks biasa
-    # =========================
+        if not existing_titles:
+            return generated_title
+
+        if isinstance(existing_titles, str):
+            existing_list = [existing_titles]
+        else:
+            existing_list = existing_titles
+
+        def similarity(a: str, b: str) -> float:
+            return difflib.SequenceMatcher(
+                None, a.lower().strip(), b.lower().strip()
+            ).ratio()
+
+        for old in existing_list:
+            sim = similarity(generated_title, old)
+            if sim >= similarity_threshold:
+                return old
+
+        return generated_title
+
     def generate_sync(self, message: str) -> str:
         response = self.client.models.generate_content(
             model="gemini-2.5-flash",
@@ -109,9 +132,6 @@ class GeminiAI:
         )
         return (response.text or "").strip()
 
-    # =========================
-    # Klasifikasi: IMAGE vs TEXT
-    # =========================
     def get_prompt_mode(self, prompt: str) -> str:
         instruction = """
         You are a classifier for user requests.
@@ -146,9 +166,6 @@ class GeminiAI:
 
         return "IMAGE" if text.startswith("IMAGE") else "TEXT"
 
-    # =========================
-    # Validasi prompt gambar
-    # =========================
     def is_valid_image_prompt(self, prompt: str) -> bool:
         instruction = """
         You are a classifier for image generation prompts.
@@ -175,9 +192,6 @@ class GeminiAI:
         text = (response.text or "").strip().upper()
         return text.startswith("VALID")
 
-    # =========================
-    # Handler: prompt text -> TEXT / IMAGE
-    # =========================
     def handle_image_prompt(
         self,
         prompt: str,
@@ -196,7 +210,6 @@ class GeminiAI:
 
         mode = self.get_prompt_mode(prompt)
 
-        # Hanya bertanya / ingin jawaban teks → langsung generate_sync
         if mode == "TEXT":
             answer = self.generate_sync(prompt)
             return {
@@ -204,7 +217,6 @@ class GeminiAI:
                 "content": answer,
             }
 
-        # User memang minta gambar → validasi deskripsi
         if not self.is_valid_image_prompt(prompt):
             fallback_prompt = f"""
             Pengguna mengirim pesan berikut:
@@ -226,7 +238,6 @@ class GeminiAI:
                 "content": fallback_text,
             }
 
-        # Prompt valid → generate image ke ImageKit
         image_url = image_generator.generate_image(prompt)
 
         if image_url:
@@ -235,7 +246,6 @@ class GeminiAI:
                 "content": image_url,
             }
 
-        # Gagal generate / upload → fallback teks
         fallback_prompt = f"""
         Pengguna mengirim permintaan untuk membuat gambar dengan prompt:
 
@@ -257,12 +267,9 @@ class GeminiAI:
             "content": fallback_text,
         }
 
-    # =========================
-    # Handler: analisis dokumen (PDF/CSV/Word)
-    # =========================
     def analyze_document(
         self,
-        file_input: Union[str, bytes],  # path string ATAU bytes
+        file_input: Union[str, bytes],
         instruction: str = (
             "Ringkas isi dokumen ini dan jelaskan poin-poin pentingnya "
             "dalam bahasa Indonesia."
@@ -281,7 +288,6 @@ class GeminiAI:
         }
         """
 
-        # 1. Upload file ke Gemini File API (tanpa config khusus)
         try:
             uploaded_file = self.client.files.upload(
                 file=file_input,
@@ -297,7 +303,6 @@ class GeminiAI:
                 "content": fallback,
             }
 
-        # 2. Panggil model dengan file + instruction
         try:
             response = self.client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -319,9 +324,6 @@ class GeminiAI:
             "content": text,
         }
 
-    # =========================
-    # ENTRY POINT UTAMA
-    # =========================
     def handle_request(
         self,
         prompt: Optional[str],
@@ -343,24 +345,20 @@ class GeminiAI:
 
         prompt = (prompt or "").strip()
 
-        # CASE 0: Prompt ada dan diklasifikasikan sebagai IMAGE → abaikan file, langsung generate gambar
         if prompt:
             mode = self.get_prompt_mode(prompt)
             if mode == "IMAGE":
                 return self.handle_image_prompt(prompt, image_generator)
 
-        # CASE 1: Tidak minta IMAGE, tapi ada dokumen → analisis dokumen
         if file_input is not None:
             return self.analyze_document(
                 file_input=file_input,
                 instruction=instruction_for_doc,
             )
 
-        # CASE 2: Hanya prompt teks (tanpa file) → alur normal via handle_image_prompt
         if prompt:
             return self.handle_image_prompt(prompt, image_generator)
 
-        # CASE 3: Tidak ada apa-apa
         return {
             "is_image": False,
             "content": (
