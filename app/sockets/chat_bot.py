@@ -84,6 +84,7 @@ def register_chat_bot_socketio_events(socketio):
         emit(
             "room_created",
             {"room": room, "ts": now_ts},
+
             to=room,
             namespace=NAMESPACE,
         )
@@ -125,6 +126,7 @@ def register_chat_bot_socketio_events(socketio):
                 "chat",
                 {"type": "history", "items": history_items, "ts": now_ts},
                 to=room,
+
                 namespace=NAMESPACE,
             )
         else:
@@ -140,10 +142,12 @@ def register_chat_bot_socketio_events(socketio):
                     "text": "Belum ada pesan. Mulai ngobrol di bawah ✨",
                     "ts": now_ts2,
                 },
+
                 to=room,
                 namespace=NAMESPACE,
             )
             _ROOM_HAS_SYSTEM.add(room)
+
 
     @socketio.on("disconnect", namespace=NAMESPACE)
     def handle_disconnect():
@@ -161,6 +165,7 @@ def register_chat_bot_socketio_events(socketio):
         if not room:
             room = f"room-{uuid.uuid4().hex}"
             _SID_ROOM[sid] = room
+
 
         text = (data or {}).get("text", "").strip()
         file = (data or {}).get("file")
@@ -286,3 +291,4 @@ def register_chat_bot_socketio_events(socketio):
                 to=room,
                 namespace=NAMESPACE,
             )
+
