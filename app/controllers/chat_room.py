@@ -13,6 +13,15 @@ class ChatRoomController:
     def __init__(self):
         self.room_chat_serializer = RoomChatSerializer()
 
+    async def delete_room(self, user, room):
+        if not (
+            data_room := await RoomChatDatabase.delete(
+                "delete_room_by_user_id", user_id=f"{user.id}", room=f"{room}"
+            )
+        ):
+            return jsonify({"message": "chat room not found"}), 404
+        return jsonify({"message": "successfully delete chat room"}), 201
+
     async def get_all_rooms(self, user):
         if not (
             data_rooms := await RoomChatDatabase.get(

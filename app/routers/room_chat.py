@@ -18,3 +18,10 @@ async def get_all_rooms():
 async def clear_rooms():
     user = request.user
     return await chat_room_controller.clear_rooms(user)
+
+
+@chat_room.delete("/<string:room>")
+@jwt_required()
+async def delete_room(room):
+    user = request.user
+    return await chat_room_controller.delete_room(user, room)
